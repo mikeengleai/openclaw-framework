@@ -1,0 +1,1191 @@
+#!/usr/bin/env python3
+"""Claude Code Workspace Manager — launch, resume, and manage workspace sessions in tmux."""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+WORKSPACES_DIR = Path.home() / "workspaces"
+SESSIONS_FILE = Path.home() / ".claude" / "workspace-sessions.json"
+TMUX_PREFIX = "cw-"  # claude-workspace prefix
+
+# ANSI colors
+BOLD = "\033[1m"
+DIM = "\033[2m"
+GREEN = "\033[32m"
+CYAN = "\033[36m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+RESET = "\033[0m"
+
+
+def load_sessions():
+    if SESSIONS_FILE.exists():
+        return json.loads(SESSIONS_FILE.read_text())
+    return {}
+
+
+def save_sessions(sessions):
+    SESSIONS_FILE.write_text(json.dumps(sessions, indent=2))
+
+
+def tmux_session_exists(name):
+    return subprocess.run(
+        ["tmux", "has-session", "-t", name], capture_output=True
+    ).returncode == 0
+
+
+def get_workspaces():
+    """Return list of workspace dirs (those with CLAUDE.md). Hidden (dotted) dirs are skipped."""
+    if not WORKSPACES_DIR.exists():
+        return []
+    workspaces = []
+    for d in sorted(WORKSPACES_DIR.iterdir()):
+        if d.name.startswith("."):
+            continue  # .archive/ etc. are not user-visible workspaces
+        if d.is_dir() and (d / "CLAUDE.md").exists():
+            desc = ""
+            for line in (d / "CLAUDE.md").read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    desc = line
+                    break
+            workspaces.append({"name": d.name, "path": str(d), "desc": desc})
+    return workspaces
+
+
+def get_active_tmux_sessions():
+    """Return set of active tmux session names starting with our prefix."""
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return set()
+    return {s for s in result.stdout.strip().split("\n") if s.startswith(TMUX_PREFIX)}
+
+
+def attach(tmux_name):
+    """Attach or switch to a tmux session."""
+    if os.environ.get("TMUX"):
+        os.execvp("tmux", ["tmux", "switch-client", "-t", tmux_name])
+    else:
+        os.execvp("tmux", ["tmux", "attach-session", "-t", tmux_name])
+
+
+def launch_workspace(name, resume_session_id=None, use_tmux=False, fresh=False, seed_file=None, bg=False):
+    """Launch (or reattach to) a workspace. Direct (no tmux) by default; pass --tmux to opt in.
+
+    fresh=True bypasses --continue/--resume so the new session has zero prior context.
+    seed_file (a path) is read and passed as the first user message via the positional prompt arg.
+    If seed_file is None and fresh=True, a HANDOFF.md in the workspace dir is auto-detected.
+    bg=True launches the session in background mode (agent view) via --bg.
+    """
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Error: workspace '{name}' does not exist{RESET}")
+        return
+
+    sessions = load_sessions()
+
+    if use_tmux:
+        tmux_name = TMUX_PREFIX + name
+        # If tmux session already running, just attach (regardless of fresh flag — there's
+        # already a live session to join, and re-creating it would lose state).
+        if tmux_session_exists(tmux_name):
+            print(f"  {GREEN}Reattaching to running session '{name}'...{RESET}")
+            attach(tmux_name)
+            return
+
+    # bg mode overrides tmux — the session runs in the background natively.
+    if bg:
+        use_tmux = False
+
+    # Build claude command (shared between tmux and no-tmux paths)
+    claude_cmd = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "-n", name,
+        "--remote-control-session-name-prefix", name,
+    ]
+
+    if bg:
+        claude_cmd.append("--bg")
+
+    # Only use --continue if this workspace has been launched before AND fresh wasn't requested.
+    # --continue with no prior session causes claude to exit immediately.
+    if fresh:
+        # Skip both --resume and --continue. Auto-detect HANDOFF.md if no explicit seed.
+        if seed_file is None:
+            handoff = workspace_dir / "HANDOFF.md"
+            if handoff.exists():
+                seed_file = handoff
+    elif resume_session_id:
+        claude_cmd.extend(["--resume", resume_session_id])
+    elif sessions.get(name, {}).get("last_launched"):
+        # Only --continue if a session jsonl actually exists in the project dir.
+        # Without one, --continue causes claude to exit immediately.
+        project_dir = workspace_memory_dir(name).parent
+        has_jsonl = project_dir.exists() and any(project_dir.glob("*.jsonl"))
+        if has_jsonl:
+            claude_cmd.extend(["--continue"])
+        else:
+            print(f"  {DIM}No prior session found — starting fresh{RESET}")
+
+    # Append a short positional prompt that points the new session at the seed file.
+    # Asking claude to Read the file (vs. embedding the whole text in argv) avoids
+    # multi-line/quoting issues and keeps argv clean.
+    if seed_file is not None:
+        seed_path = Path(seed_file)
+        if not seed_path.exists():
+            print(f"  {RED}Seed file not found: {seed_path}{RESET}")
+            return
+        size = seed_path.stat().st_size
+        claude_cmd.append(
+            f"This is a fresh session for the '{name}' workspace. Read the handoff document "
+            f"at {seed_path} — it contains the in-flight context from the previous session "
+            f"(decisions made, files touched, open threads, gotchas). Once you've read and "
+            f"absorbed it, give me a one-paragraph summary of what's in flight and wait."
+        )
+        print(f"  {DIM}Seeding session with {seed_path.name} ({size} bytes){RESET}")
+
+    if not use_tmux:
+        # Record metadata before exec (execvp replaces the current process).
+        sessions[name] = {
+            "tmux_session": None,
+            "workspace_dir": str(workspace_dir),
+            "last_launched": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "session_id": resume_session_id or sessions.get(name, {}).get("session_id"),
+        }
+        save_sessions(sessions)
+        if bg:
+            print(f"  {GREEN}Launching workspace '{name}' in background (agent view)...{RESET}")
+        else:
+            print(f"  {GREEN}Launching workspace '{name}' in current shell (no tmux)...{RESET}")
+        os.chdir(str(workspace_dir))
+        os.execvp("claude", claude_cmd)
+        return  # unreachable
+
+    # tmux path — create detached session in the workspace directory.
+    subprocess.run([
+        "tmux", "new-session", "-d",
+        "-s", tmux_name,
+        "-c", str(workspace_dir),
+    ] + claude_cmd)
+
+    if tmux_session_exists(tmux_name):
+        sessions[name] = {
+            "tmux_session": tmux_name,
+            "workspace_dir": str(workspace_dir),
+            "last_launched": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "session_id": resume_session_id or sessions.get(name, {}).get("session_id"),
+        }
+        save_sessions(sessions)
+        print(f"  {GREEN}Launched workspace '{name}'. Attaching...{RESET}")
+        attach(tmux_name)
+    else:
+        print(f"  {RED}Failed to create tmux session.{RESET}")
+
+
+def create_workspace():
+    """Create a new workspace directory."""
+    print(f"\n  {BOLD}Create New Workspace{RESET}")
+    print("  " + "-" * 30)
+    name = input("  Name (short, no spaces): ").strip()
+    if not name or " " in name or "/" in name:
+        print(f"  {RED}Invalid name.{RESET}")
+        return
+    workspace_dir = WORKSPACES_DIR / name
+    if workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' already exists.{RESET}")
+        return
+    desc = input("  Description: ").strip() or "General workspace"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "CLAUDE.md").write_text(f"# {name.title()} Workspace\n\n{desc}\n")
+    print(f"  {GREEN}Created workspace '{name}' at {workspace_dir}{RESET}")
+    launch_now = input("  Launch now? [Y/n]: ").strip().lower()
+    if launch_now != "n":
+        launch_workspace(name)
+
+
+def rename_workspace(old_name, new_name):
+    """Rename a workspace: directory, Claude project dir, sessions entry, tmux session."""
+    import shutil
+    old_dir = WORKSPACES_DIR / old_name
+    new_dir = WORKSPACES_DIR / new_name
+    if not old_dir.exists():
+        print(f"  {RED}Workspace '{old_name}' does not exist.{RESET}")
+        return
+    if new_dir.exists():
+        print(f"  {RED}Workspace '{new_name}' already exists.{RESET}")
+        return
+    if " " in new_name or "/" in new_name:
+        print(f"  {RED}Invalid name (no spaces or slashes).{RESET}")
+        return
+
+    # 1. Stop tmux session if running (can't rename a live claude process's -n flag).
+    old_tmux = TMUX_PREFIX + old_name
+    was_running = tmux_session_exists(old_tmux)
+    if was_running:
+        print(f"  {YELLOW}Stopping running session '{old_name}' for rename…{RESET}")
+        subprocess.run(["tmux", "kill-session", "-t", old_tmux], capture_output=True)
+
+    # 2. Rename workspace directory.
+    old_dir.rename(new_dir)
+    print(f"  {GREEN}Renamed {old_dir.name}/ → {new_dir.name}/{RESET}")
+
+    # 3. Move Claude project dir (memory + session jsonl) to match new path encoding.
+    old_encoded = str(old_dir).replace("/", "-")
+    new_encoded = str(new_dir).replace("/", "-")
+    old_project = Path.home() / ".claude" / "projects" / old_encoded
+    new_project = Path.home() / ".claude" / "projects" / new_encoded
+    if old_project.exists():
+        if new_project.exists():
+            shutil.rmtree(str(new_project))
+        old_project.rename(new_project)
+        print(f"  {GREEN}Moved Claude project dir{RESET}")
+
+    # 4. Update sessions tracking.
+    sessions = load_sessions()
+    if old_name in sessions:
+        entry = sessions.pop(old_name)
+        entry["workspace_dir"] = str(new_dir)
+        sessions[new_name] = entry
+        save_sessions(sessions)
+
+    # 5. Update the CLAUDE.md title if it still references the old name.
+    claude_md = new_dir / "CLAUDE.md"
+    if claude_md.exists():
+        text = claude_md.read_text()
+        old_title = f"# {old_name.title()} Workspace"
+        if old_title in text:
+            text = text.replace(old_title, f"# {new_name.title()} Workspace", 1)
+            claude_md.write_text(text)
+
+    print(f"  {GREEN}Renamed '{old_name}' → '{new_name}'{RESET}")
+    if was_running:
+        print(f"  {DIM}Session was stopped for rename. Relaunch with: cw launch {new_name}{RESET}")
+
+
+def stop_workspace(name):
+    """Stop a running workspace tmux session."""
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        print(f"  {YELLOW}Stopped session '{name}'{RESET}")
+    else:
+        print(f"  {DIM}Session '{name}' not running{RESET}")
+
+
+def delete_workspace(name):
+    """Delete a workspace: stop session, remove directory, clean up session data."""
+    import shutil
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return
+
+    # Confirm
+    confirm = input(f"  {RED}Delete workspace '{name}' and all its files? [y/N]: {RESET}").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{RESET}")
+        return
+
+    # Stop tmux session if running
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        print(f"  {YELLOW}Stopped running session '{name}'{RESET}")
+
+    # Remove workspace directory
+    shutil.rmtree(str(workspace_dir))
+    print(f"  {YELLOW}Removed {workspace_dir}{RESET}")
+
+    # Remove the orphan Claude project dir (memory + session jsonl).
+    # If we leave it behind, a later `archive restore` (which re-creates the project dir
+    # via rename) will fail with ENOTEMPTY.
+    encoded = str(workspace_dir).replace("/", "-")
+    project_dir = Path.home() / ".claude" / "projects" / encoded
+    if project_dir.exists():
+        shutil.rmtree(str(project_dir))
+        print(f"  {DIM}Removed Claude project dir {project_dir}{RESET}")
+
+    # Clean up session entry
+    sessions = load_sessions()
+    if name in sessions:
+        del sessions[name]
+        save_sessions(sessions)
+
+    print(f"  {GREEN}Workspace '{name}' deleted.{RESET}")
+
+
+# --- Memory compaction ------------------------------------------------------
+
+COMPACTION_PROMPT_PATH = Path.home() / "bin" / "compaction-prompt.md"
+
+
+def workspace_memory_dir(name):
+    """Return the memory directory path for a workspace."""
+    workspace_path = WORKSPACES_DIR / name
+    encoded = str(workspace_path).replace("/", "-")
+    return Path.home() / ".claude" / "projects" / encoded / "memory"
+
+
+def find_latest_backup(memory_dir):
+    """Return most recent memory.bak-* sibling, or None."""
+    parent = memory_dir.parent
+    if not parent.exists():
+        return None
+    backups = sorted(parent.glob("memory.bak-*"))
+    return backups[-1] if backups else None
+
+
+def compact_plan(name):
+    """Stage 1 — back up memory/, spawn curator, write memory.staged/."""
+    if (WORKSPACES_DIR / name / "CLAUDE.md").exists() is False:
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return
+
+    memory_dir = workspace_memory_dir(name)
+    if not memory_dir.exists() or not any(memory_dir.iterdir()):
+        print(f"  {YELLOW}No memory yet for '{name}' — nothing to compact.{RESET}")
+        return
+
+    parent = memory_dir.parent
+    staged_dir = parent / "memory.staged"
+    if staged_dir.exists():
+        print(f"  {RED}A staged compaction already exists: {staged_dir}{RESET}")
+        print(f"  Apply:   claude-workspaces compact {name} --apply")
+        print(f"  Discard: claude-workspaces compact {name} --discard")
+        return
+
+    if not COMPACTION_PROMPT_PATH.exists():
+        print(f"  {RED}Compaction prompt missing: {COMPACTION_PROMPT_PATH}{RESET}")
+        return
+
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        print(f"  {YELLOW}Warning: '{name}' has an active tmux session.{RESET}")
+        print(f"  Memory may change mid-compaction. Stop the session first for a clean run.")
+        resp = input("  Continue anyway? [y/N]: ").strip().lower()
+        if resp != "y":
+            return
+
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    backup_dir = parent / f"memory.bak-{ts}"
+    import shutil
+    shutil.copytree(str(memory_dir), str(backup_dir))
+    print(f"  {GREEN}Backed up memory → {backup_dir.name}{RESET}")
+
+    staged_dir.mkdir()
+
+    prompt = COMPACTION_PROMPT_PATH.read_text()
+    prompt = (prompt
+              .replace("{{source_dir}}", str(memory_dir))
+              .replace("{{staged_dir}}", str(staged_dir))
+              .replace("{{workspace_name}}", name))
+
+    workspace_dir = WORKSPACES_DIR / name
+    print(f"  {CYAN}Running curator (may take 1–3 minutes)…{RESET}\n")
+    result = subprocess.run(
+        ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+        cwd=str(workspace_dir),
+    )
+
+    if result.returncode != 0:
+        print(f"\n  {RED}Curator exited {result.returncode}. Staging left for inspection:{RESET}")
+        print(f"  {staged_dir}")
+        return
+
+    summary = staged_dir / ".compaction-summary.md"
+    if summary.exists():
+        print(f"\n  {BOLD}─── Compaction Summary ───{RESET}")
+        for line in summary.read_text().splitlines():
+            print(f"  {line}")
+        print(f"  {BOLD}──────────────────────────{RESET}\n")
+    else:
+        print(f"\n  {YELLOW}(no summary file produced — inspect {staged_dir} manually){RESET}")
+
+    before = len(list(memory_dir.glob("*.md")))
+    after = len(list(staged_dir.glob("*.md")))
+    print(f"  Before: {before} files    After: {after} files")
+    print(f"\n  Review:  diff -r {memory_dir} {staged_dir}")
+    print(f"  Apply:   claude-workspaces compact {name} --apply")
+    print(f"  Discard: claude-workspaces compact {name} --discard")
+    print(f"  Undo later: claude-workspaces compact {name} --undo")
+
+
+def compact_apply(name):
+    """Stage 2 — swap memory.staged/ into memory/."""
+    memory_dir = workspace_memory_dir(name)
+    parent = memory_dir.parent
+    staged_dir = parent / "memory.staged"
+    if not staged_dir.exists():
+        print(f"  {RED}No staged compaction for '{name}'. Run 'compact {name}' first.{RESET}")
+        return
+
+    import shutil
+    if memory_dir.exists():
+        shutil.rmtree(str(memory_dir))
+    staged_dir.rename(memory_dir)
+    print(f"  {GREEN}Applied. Memory updated at {memory_dir}.{RESET}")
+    print(f"  {DIM}Backup retained — use '--undo' to revert.{RESET}")
+
+
+def compact_discard(name):
+    """Throw away the staged compaction."""
+    memory_dir = workspace_memory_dir(name)
+    staged_dir = memory_dir.parent / "memory.staged"
+    if not staged_dir.exists():
+        print(f"  {DIM}No staged compaction to discard.{RESET}")
+        return
+    import shutil
+    shutil.rmtree(str(staged_dir))
+    print(f"  {YELLOW}Discarded staged compaction.{RESET}")
+
+
+def compact_undo(name):
+    """Restore memory/ from most recent memory.bak-*/."""
+    memory_dir = workspace_memory_dir(name)
+    backup = find_latest_backup(memory_dir)
+    if not backup:
+        print(f"  {RED}No backup found for '{name}'.{RESET}")
+        return
+
+    import shutil
+    if memory_dir.exists():
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        undone = memory_dir.parent / f"memory.undone-{ts}"
+        memory_dir.rename(undone)
+        print(f"  {DIM}Current memory moved aside → {undone.name}{RESET}")
+
+    shutil.copytree(str(backup), str(memory_dir))
+    print(f"  {GREEN}Restored from {backup.name}.{RESET}")
+
+
+# --- Archive / Handoff / Rotate ---------------------------------------------
+
+ARCHIVE_DIR = WORKSPACES_DIR / ".archive"
+
+HANDOFF_CURATOR_PROMPT = """You are writing a HANDOFF.md document for the next Claude Code session in the \
+'{name}' workspace. The current session has accumulated too much context and is being \
+rotated out. Your job is to produce a comprehensive markdown handoff that lets a fresh \
+Claude session pick up exactly where this one left off, *without* needing to re-read the \
+entire conversation.
+
+Capture, in this order:
+
+1. **Current goal** — what the user is trying to accomplish right now.
+2. **What's done** — concrete deliverables completed, with file paths and brief descriptions.
+3. **What's in flight** — work in progress, partial implementations, open PRs, staged changes.
+4. **Decisions made** — design choices, trade-offs, things explicitly rejected and why.
+5. **Gotchas / constraints** — non-obvious facts, quirks, prior pitfalls, environmental \
+   constraints, things the next session must avoid.
+6. **Open threads / next steps** — what to do next, in priority order.
+7. **Key references** — file paths, URLs, ticket IDs, channel IDs, commands the next session \
+   will need at hand.
+
+Write in clear, structured markdown. Use headings, tables, and bullet lists. Include \
+specific file paths and command examples wherever they aid recall. Aim for thoroughness \
+over brevity — this document replaces hours of conversation for the next session.
+
+Write the file to: {handoff_path}
+
+After writing, output one line confirming the file was created and its size in bytes. \
+Do not output anything else."""
+
+
+def workspace_project_dir(name):
+    """Return the Claude project directory for a workspace (parent of memory/)."""
+    return workspace_memory_dir(name).parent
+
+
+def ensure_archive_dir():
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def lineage_path(name):
+    return WORKSPACES_DIR / name / "LINEAGE.md"
+
+
+def append_lineage(name, archived_as, before_count, after_count, had_handoff):
+    """Append a row to the new workspace's LINEAGE.md (creating it if needed)."""
+    lp = lineage_path(name)
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    if not lp.exists():
+        lp.write_text(
+            f"# {name} — workspace lineage\n\n"
+            f"Each row records a rotation: the prior incarnation of this workspace was archived "
+            f"and replaced with a fresh session.\n\n"
+            f"| Rotated | Archived as | Memory before | Memory after | Handoff |\n"
+            f"|---|---|---|---|---|\n"
+        )
+    with lp.open("a") as f:
+        f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+
+
+def handoff_adopt(name, source_file):
+    """Copy/move an existing markdown to the workspace's HANDOFF.md."""
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return None
+    src = Path(source_file)
+    if not src.exists():
+        print(f"  {RED}Source markdown not found: {src}{RESET}")
+        return None
+    dst = workspace_dir / "HANDOFF.md"
+    import shutil
+    shutil.copy2(str(src), str(dst))
+    print(f"  {GREEN}Adopted {src} → {dst}{RESET}")
+    return dst
+
+
+def handoff_from_jsonl(name):
+    """Spawn `claude -p --resume <id>` against the workspace's last session jsonl, asking
+    it to write HANDOFF.md. Slow (one full read of the bloated session) but one-shot."""
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return None
+
+    # Find most recent jsonl in the workspace's project dir.
+    project_dir = workspace_project_dir(name)
+    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not jsonls:
+        print(f"  {RED}No prior session jsonl found for '{name}'. Cannot generate handoff.{RESET}")
+        return None
+    session_id = jsonls[0].stem
+    handoff_path = workspace_dir / "HANDOFF.md"
+
+    prompt = HANDOFF_CURATOR_PROMPT.format(name=name, handoff_path=str(handoff_path))
+    print(f"  {CYAN}Generating handoff from session {session_id} (this may take 1–3 minutes)…{RESET}")
+    result = subprocess.run(
+        ["claude", "-p", prompt, "--resume", session_id, "--dangerously-skip-permissions"],
+        cwd=str(workspace_dir),
+    )
+    if result.returncode != 0:
+        print(f"  {RED}Handoff generator exited {result.returncode}.{RESET}")
+        return None
+    if not handoff_path.exists():
+        print(f"  {RED}Generator finished but HANDOFF.md not written.{RESET}")
+        return None
+    print(f"  {GREEN}Wrote {handoff_path} ({handoff_path.stat().st_size} bytes){RESET}")
+    return handoff_path
+
+
+def cmd_handoff(name, mode, source=None):
+    """User-facing handoff producer. mode in {'adopt', 'from-jsonl'}."""
+    if mode == "adopt":
+        if not source:
+            print(f"  {RED}--adopt requires a source path.{RESET}")
+            return
+        handoff_adopt(name, source)
+    elif mode == "from-jsonl":
+        handoff_from_jsonl(name)
+    else:
+        print(f"  {RED}Unknown handoff mode: {mode}{RESET}")
+
+
+def archive_workspace(name):
+    """Move the workspace dir AND its Claude project dir into ~/workspaces/.archive/<name>-<ts>/.
+
+    Returns the archive root path on success, or None on failure.
+    """
+    workspace_dir = WORKSPACES_DIR / name
+    project_dir = workspace_project_dir(name)
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return None
+
+    ensure_archive_dir()
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    archive_root = ARCHIVE_DIR / f"{name}-{ts}"
+    if archive_root.exists():
+        # extreme edge: same-second collision; suffix with microseconds
+        archive_root = ARCHIVE_DIR / f"{name}-{ts}-{int(time.time()*1000) % 1000}"
+    archive_root.mkdir(parents=True)
+
+    import shutil
+    workspace_dir.rename(archive_root / "workspace")
+    if project_dir.exists():
+        project_dir.rename(archive_root / "project")
+
+    # Record metadata for restore/purge.
+    meta = {
+        "name": name,
+        "archived_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "workspace_dir": str(workspace_dir),
+        "project_dir": str(project_dir),
+    }
+    (archive_root / "rotation-meta.json").write_text(json.dumps(meta, indent=2))
+
+    # Drop sessions[name] so a future launch doesn't pick up stale --continue metadata.
+    sessions = load_sessions()
+    if name in sessions:
+        del sessions[name]
+        save_sessions(sessions)
+
+    print(f"  {GREEN}Archived '{name}' → {archive_root.name}{RESET}")
+    return archive_root
+
+
+def archive_list_cmd():
+    """List archived workspaces. Tombstoned (.restored-*) entries are hidden."""
+    if not ARCHIVE_DIR.exists():
+        print("  No archives.")
+        return
+    entries = sorted(
+        (p for p in ARCHIVE_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")),
+        key=lambda p: p.name, reverse=True
+    )
+    if not entries:
+        print("  No archives.")
+        return
+    print(f"\n  {BOLD}Archived workspaces (~/workspaces/.archive/){RESET}")
+    print(f"  {DIM}{'─'*70}{RESET}")
+    for e in entries:
+        if not e.is_dir():
+            continue
+        meta_path = e / "rotation-meta.json"
+        when = ""
+        if meta_path.exists():
+            try:
+                m = json.loads(meta_path.read_text())
+                when = m.get("archived_at", "")
+            except Exception:
+                pass
+        size_kb = sum(f.stat().st_size for f in e.rglob("*") if f.is_file()) // 1024
+        print(f"  {e.name:<40} {when:<20} {size_kb} KB")
+    print()
+
+
+def archive_restore(archived_name):
+    """Promote an archived workspace back to ~/workspaces/<original-name>/.
+
+    archived_name is the directory name under .archive/ (e.g. 'pm-20260426-2134').
+    Refuses if a live workspace with the same original name already exists.
+    """
+    src = ARCHIVE_DIR / archived_name
+    if not src.exists():
+        print(f"  {RED}Archive '{archived_name}' not found.{RESET}")
+        return
+    meta_path = src / "rotation-meta.json"
+    if not meta_path.exists():
+        print(f"  {RED}Archive missing rotation-meta.json — refusing to restore.{RESET}")
+        return
+    meta = json.loads(meta_path.read_text())
+    name = meta["name"]
+    workspace_dst = Path(meta["workspace_dir"])
+    project_dst = Path(meta["project_dir"])
+    if workspace_dst.exists():
+        print(f"  {RED}A live workspace already exists at {workspace_dst}.{RESET}")
+        print(f"  {DIM}Rotate or delete it first before restoring.{RESET}")
+        return
+    confirm = input(f"  Restore '{archived_name}' → {workspace_dst}? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{RESET}")
+        return
+    import shutil
+
+    # Resilient restore: each subdir restored independently. If a prior partial restore
+    # already moved one half out, we just skip that half and complete the other.
+    if (src / "workspace").exists():
+        if workspace_dst.exists():
+            shutil.rmtree(str(workspace_dst))
+        (src / "workspace").rename(workspace_dst)
+        print(f"  {GREEN}Restored workspace dir → {workspace_dst}{RESET}")
+    else:
+        print(f"  {YELLOW}Archive has no workspace/ — skipping workspace restore.{RESET}")
+
+    if (src / "project").exists():
+        if project_dst.exists():
+            shutil.rmtree(str(project_dst))
+            print(f"  {DIM}Removed orphan project dir at {project_dst}{RESET}")
+        project_dst.parent.mkdir(parents=True, exist_ok=True)
+        (src / "project").rename(project_dst)
+        print(f"  {GREEN}Restored project dir → {project_dst}{RESET}")
+    else:
+        print(f"  {YELLOW}Archive has no project/ — skipping project restore.{RESET}")
+
+    # Tombstone the archive so it doesn't show up in `archive list`.
+    src.rename(src.parent / f".restored-{src.name}")
+    print(f"  {GREEN}Restored '{name}' from {archived_name}.{RESET}")
+
+
+def purge_archives(older_than_days=None, dry_run=False):
+    """Delete archived workspaces. With older_than_days, only delete archives older than N days."""
+    if not ARCHIVE_DIR.exists():
+        print("  No archives.")
+        return
+    import shutil
+    now = time.time()
+    cutoff = now - (older_than_days * 86400) if older_than_days else None
+    candidates = []
+    for e in sorted(ARCHIVE_DIR.iterdir()):
+        if not e.is_dir() or e.name.startswith("."):
+            continue
+        if cutoff is not None and e.stat().st_mtime > cutoff:
+            continue
+        candidates.append(e)
+    if not candidates:
+        print(f"  {DIM}No archives matched.{RESET}")
+        return
+    print(f"\n  {BOLD}Purge plan{RESET} ({'dry-run' if dry_run else 'will DELETE'}):")
+    total_kb = 0
+    for e in candidates:
+        kb = sum(f.stat().st_size for f in e.rglob("*") if f.is_file()) // 1024
+        total_kb += kb
+        print(f"    {e.name:<40} {kb} KB")
+    print(f"  {BOLD}Total: {total_kb} KB across {len(candidates)} archives.{RESET}")
+    if dry_run:
+        return
+    confirm = input(f"\n  {RED}Permanently delete the above? [y/N]: {RESET}").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{RESET}")
+        return
+    for e in candidates:
+        shutil.rmtree(str(e))
+    print(f"  {GREEN}Deleted {len(candidates)} archive(s).{RESET}")
+
+
+def rotate_workspace(name, use_tmux=False, bg=False):
+    """Headline rotation: compact → handoff → archive → re-create → fresh launch.
+
+    Same-name rotation: the workspace is archived under .archive/<name>-<ts>/ and a fresh
+    workspace is created at the same path, carrying forward CLAUDE.md and the *compacted*
+    memory entries. The previous session's HANDOFF.md is the seed for the new session.
+    """
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return
+
+    # 1. Plan + confirm.
+    memory_dir = workspace_memory_dir(name)
+    project_dir = workspace_project_dir(name)
+    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if project_dir.exists() else []
+    jsonl_size_kb = (jsonls[0].stat().st_size // 1024) if jsonls else 0
+    mem_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
+    handoff_existing = workspace_dir / "HANDOFF.md"
+    have_handoff = handoff_existing.exists()
+
+    print(f"\n  {BOLD}Rotation plan for '{name}':{RESET}")
+    print(f"    Last session jsonl:   {jsonls[0].name if jsonls else '(none)'}  ({jsonl_size_kb} KB)")
+    print(f"    Memory entries:       {mem_count}")
+    print(f"    HANDOFF.md:           {'present (will adopt)' if have_handoff else 'missing — will generate from jsonl'}")
+    print(f"    Compaction:           {'will run' if mem_count > 0 else 'skip (no memory yet)'}")
+    print(f"    Archive target:       ~/workspaces/.archive/{name}-{time.strftime('%Y%m%d-%H%M%S')}/")
+    print(f"    New workspace:        ~/workspaces/{name}/  (fresh, seeded with HANDOFF.md)")
+    print()
+    confirm = input(f"  Proceed? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{RESET}")
+        return
+
+    # 2. Stop tmux session if running (clean snapshot).
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        print(f"  {YELLOW}Stopping running tmux session…{RESET}")
+        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+
+    # 3. Compact (auto-apply for atomic rotation flow).
+    before_count = mem_count
+    after_count = mem_count
+    if mem_count > 0:
+        print(f"\n  {BOLD}Step 1/4: Compacting memory…{RESET}")
+        compact_plan(name)
+        staged = project_dir / "memory.staged"
+        if not staged.exists():
+            print(f"  {RED}Compaction produced no staging dir — aborting rotation.{RESET}")
+            return
+        after_count = len(list(staged.glob("*.md")))
+        compact_apply(name)
+
+    # 4. Generate or adopt HANDOFF.md.
+    print(f"\n  {BOLD}Step 2/4: HANDOFF.md…{RESET}")
+    if not have_handoff:
+        if not jsonls:
+            print(f"  {YELLOW}No jsonl + no HANDOFF.md — proceeding without a seed file.{RESET}")
+        else:
+            handoff_from_jsonl(name)
+    else:
+        print(f"  {DIM}Using existing HANDOFF.md.{RESET}")
+
+    # 5. Snapshot what we're carrying forward, archive the rest.
+    print(f"\n  {BOLD}Step 3/4: Archiving old workspace…{RESET}")
+    import shutil
+    snapshot_dir = Path("/tmp") / f"cw-rotate-{name}-{int(time.time())}"
+    snapshot_dir.mkdir()
+    # CLAUDE.md
+    if (workspace_dir / "CLAUDE.md").exists():
+        shutil.copy2(str(workspace_dir / "CLAUDE.md"), str(snapshot_dir / "CLAUDE.md"))
+    # HANDOFF.md (if any)
+    if (workspace_dir / "HANDOFF.md").exists():
+        shutil.copy2(str(workspace_dir / "HANDOFF.md"), str(snapshot_dir / "HANDOFF.md"))
+    # LINEAGE.md (if any) — append-only history carries forward
+    if (workspace_dir / "LINEAGE.md").exists():
+        shutil.copy2(str(workspace_dir / "LINEAGE.md"), str(snapshot_dir / "LINEAGE.md"))
+    # Compacted memory dir
+    if memory_dir.exists():
+        shutil.copytree(str(memory_dir), str(snapshot_dir / "memory"))
+
+    archive_root = archive_workspace(name)
+    if archive_root is None:
+        print(f"  {RED}Archive failed — snapshot retained at {snapshot_dir}{RESET}")
+        return
+
+    # 6. Re-create workspace + project dir from snapshot.
+    print(f"\n  {BOLD}Step 4/4: Creating fresh workspace…{RESET}")
+    workspace_dir.mkdir(parents=True)
+    if (snapshot_dir / "CLAUDE.md").exists():
+        shutil.copy2(str(snapshot_dir / "CLAUDE.md"), str(workspace_dir / "CLAUDE.md"))
+    if (snapshot_dir / "HANDOFF.md").exists():
+        shutil.copy2(str(snapshot_dir / "HANDOFF.md"), str(workspace_dir / "HANDOFF.md"))
+    if (snapshot_dir / "LINEAGE.md").exists():
+        shutil.copy2(str(snapshot_dir / "LINEAGE.md"), str(workspace_dir / "LINEAGE.md"))
+
+    # Re-create the Claude project dir + carry compacted memory forward.
+    project_dir.mkdir(parents=True)
+    if (snapshot_dir / "memory").exists():
+        shutil.copytree(str(snapshot_dir / "memory"), str(memory_dir))
+
+    append_lineage(name, archive_root.name, before_count, after_count, have_handoff or (workspace_dir / "HANDOFF.md").exists())
+    shutil.rmtree(str(snapshot_dir))
+
+    print(f"\n  {GREEN}Rotation complete.{RESET}")
+    print(f"  {DIM}Old: ~/workspaces/.archive/{archive_root.name}/{RESET}")
+    print(f"  {DIM}New: {workspace_dir} (memory: {after_count} entries){RESET}")
+
+    # 7. Launch fresh.
+    launch_now = input(f"\n  Launch '{name}' now in fresh mode? [Y/n]: ").strip().lower()
+    if launch_now != "n":
+        seed = workspace_dir / "HANDOFF.md"
+        launch_workspace(name, use_tmux=use_tmux, fresh=True,
+                         seed_file=seed if seed.exists() else None, bg=bg)
+
+
+# ----------------------------------------------------------------------------
+
+
+def show_menu(use_tmux=False, bg=False):
+    """Interactive workspace picker."""
+    workspaces = get_workspaces()
+    active = get_active_tmux_sessions()
+    sessions = load_sessions()
+
+    while True:
+        if bg:
+            mode = f"{CYAN}background (agent view){RESET}"
+        elif use_tmux:
+            mode = f"{GREEN}tmux{RESET}"
+        else:
+            mode = f"{YELLOW}direct (no tmux){RESET}"
+        print(f"\n  {BOLD}{'='*46}{RESET}")
+        print(f"  {BOLD} Claude Code Workspace Manager{RESET}  [{mode}]")
+        print(f"  {BOLD}{'='*46}{RESET}\n")
+
+        if not workspaces:
+            print(f"  {DIM}No workspaces found in {WORKSPACES_DIR}{RESET}\n")
+        else:
+            print(f"  {BOLD} #  Workspace        Status    Description{RESET}")
+            print(f"  {DIM}{'─'*55}{RESET}")
+            for i, ws in enumerate(workspaces, 1):
+                tmux_name = TMUX_PREFIX + ws["name"]
+                running = tmux_name in active
+                status = f"{GREEN}running{RESET}" if running else f"{DIM}stopped{RESET}"
+                print(f"  {BOLD}{i:>2}{RESET}  {ws['name']:<16}{status:<18}{ws['desc'][:35]}")
+            print()
+
+        print(f"  {CYAN}[#]{RESET}  Launch/attach workspace by number")
+        print(f"  {CYAN}[n]{RESET}  Create new workspace")
+        print(f"  {CYAN}[s]{RESET}  Stop a running workspace")
+        print(f"  {CYAN}[r]{RESET}  Rotate a workspace (compact + handoff + archive + fresh)")
+        print(f"  {CYAN}[a]{RESET}  Show archived workspaces")
+        print(f"  {CYAN}[d]{RESET}  Delete a workspace")
+        print(f"  {CYAN}[b]{RESET}  Toggle background/agent-view mode (currently: {'ON' if bg else 'off'})")
+        print(f"  {CYAN}[t]{RESET}  Toggle tmux mode (currently: {mode})")
+        print(f"  {CYAN}[q]{RESET}  Quit")
+        choice = input(f"\n  > ").strip().lower()
+
+        if choice == "q":
+            break
+        elif choice == "r":
+            pick = input("  Workspace name or number to rotate: ").strip()
+            target = None
+            try:
+                idx = int(pick) - 1
+                if 0 <= idx < len(workspaces):
+                    target = workspaces[idx]["name"]
+            except ValueError:
+                if any(w["name"] == pick for w in workspaces):
+                    target = pick
+            if target:
+                rotate_workspace(target, use_tmux=use_tmux, bg=bg)
+                workspaces = get_workspaces()
+                active = get_active_tmux_sessions()
+            else:
+                print(f"  {RED}Unknown workspace '{pick}'{RESET}")
+        elif choice == "a":
+            archive_list_cmd()
+        elif choice == "d":
+            name = input("  Workspace name or number to delete: ").strip()
+            try:
+                idx = int(name) - 1
+                if 0 <= idx < len(workspaces):
+                    delete_workspace(workspaces[idx]["name"])
+                    workspaces = get_workspaces()
+                    active = get_active_tmux_sessions()
+            except ValueError:
+                delete_workspace(name)
+                workspaces = get_workspaces()
+                active = get_active_tmux_sessions()
+        elif choice == "b":
+            bg = not bg
+            if bg:
+                use_tmux = False  # bg supersedes tmux
+        elif choice == "t":
+            use_tmux = not use_tmux
+            if use_tmux:
+                bg = False  # tmux supersedes bg
+        elif choice == "n":
+            create_workspace()
+            workspaces = get_workspaces()
+            active = get_active_tmux_sessions()
+        elif choice == "s":
+            name = input("  Workspace name or number to stop: ").strip()
+            try:
+                idx = int(name) - 1
+                if 0 <= idx < len(workspaces):
+                    stop_workspace(workspaces[idx]["name"])
+                    active = get_active_tmux_sessions()
+            except ValueError:
+                stop_workspace(name)
+                active = get_active_tmux_sessions()
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(workspaces):
+                    launch_workspace(workspaces[idx]["name"], use_tmux=use_tmux, bg=bg)
+                else:
+                    print(f"  {RED}Invalid number.{RESET}")
+            except ValueError:
+                matching = [w for w in workspaces if w["name"] == choice]
+                if matching:
+                    launch_workspace(matching[0]["name"], use_tmux=use_tmux, bg=bg)
+                else:
+                    print(f"  {RED}Unknown option '{choice}'{RESET}")
+
+
+def print_usage():
+    print(f"""
+  {BOLD}Claude Code Workspace Manager (cw){RESET}
+
+  Each workspace is a topic-scoped Claude Code session with its own memory dir.
+  Same-name rotations let you keep working under a stable name (`pm`, `sales`, …)
+  while the bloated history is archived behind the scenes.
+
+  {BOLD}Core commands:{RESET}
+    cw [--tmux] [--bg]                Interactive menu (default: direct/no-tmux)
+    cw launch NAME [flags]            Launch / reattach to a workspace
+        flags:
+          --session ID      Resume a specific Claude session
+          --fresh           Skip --continue; start a brand-new session
+                            (auto-seeds HANDOFF.md if present in workspace dir)
+          --seed FILE       Use FILE as the initial-prompt seed (implies --fresh)
+          --bg              Launch in background mode (agent view); visible in
+                            claude.ai/code, desktop app, and `claude agents`
+          --tmux            Run claude inside a tmux session (opt-in)
+          --no-tmux         Force direct mode (default)
+    cw list                           List workspaces and status
+    cw create NAME [DESC...]          Create a new workspace
+    cw rename OLD NEW                  Rename a workspace (dir, project, sessions)
+    cw stop NAME                      Stop a running tmux workspace
+    cw delete NAME                    Delete a workspace + its Claude project dir (confirms)
+
+  {BOLD}Memory compaction:{RESET}
+    cw compact NAME                   Curate memory/ → memory.staged/ (dry-run; review first)
+    cw compact NAME --apply           Swap memory.staged/ into memory/
+    cw compact NAME --discard         Throw away the staged version
+    cw compact NAME --undo            Restore memory/ from the most recent backup
+
+  {BOLD}Handoff / Rotation (context-shedding workflow):{RESET}
+    cw handoff NAME --adopt FILE      Promote an existing markdown to ~/workspaces/NAME/HANDOFF.md
+    cw handoff NAME --from-jsonl      Generate HANDOFF.md by replaying the last session via `claude -p --resume`
+    cw rotate NAME                    Compact + handoff + archive old session + launch fresh (same name)
+    cw archive list                   Show archived workspaces (~/workspaces/.archive/)
+    cw archive restore <id>           Restore an archived workspace by id (e.g. pm-20260426-2134)
+    cw purge [--older-than Nd]        Permanently delete archives (asks for confirmation; default: all)
+    cw purge --dry-run                Preview what purge would delete
+
+  {BOLD}Interactive menu keys:{RESET}
+    [#]  Launch/attach workspace by number      [r]  Rotate a workspace
+    [n]  Create new workspace                    [a]  Show archived workspaces
+    [s]  Stop a running workspace                [d]  Delete a workspace
+    [b]  Toggle background/agent-view mode       [t]  Toggle tmux mode
+    [q]  Quit
+
+  {BOLD}Launch modes:{RESET}
+    Default is direct (no tmux). Pass a flag before any subcommand to opt in:
+        cw --tmux launch sales          Run inside a tmux session
+        cw --bg launch sales            Run in background (agent view)
+        cw --bg                         Open interactive menu in bg mode
+    Inside the interactive menu, press [b] or [t] to toggle modes.
+    --bg sessions are visible in claude.ai/code, the desktop app, and `claude agents`.
+
+  {BOLD}File layout:{RESET}
+    ~/workspaces/<name>/              Workspace dir (CLAUDE.md, HANDOFF.md, LINEAGE.md)
+    ~/workspaces/.archive/<id>/       Archived rotations (workspace/, project/, rotation-meta.json)
+    ~/.claude/projects/<encoded>/     Per-workspace Claude project (memory/, *.jsonl)
+    ~/bin/compaction-prompt.md        Curator prompt template (edit to customize compaction)
+
+  {BOLD}Typical rotation flow:{RESET}
+    1. Working in a long session, getting context warnings.
+    2. (Optional) Use the brainstorming skill to write a markdown summary.
+    3. cw rotate NAME           — compacts memory, generates/adopts HANDOFF.md, archives old.
+    4. cw                       — pick the same name; new session opens with the handoff seeded.
+    5. cw archive list          — peek at archives anytime.
+    6. cw purge --older-than 30d — periodic cleanup of old rotations.
+""")
+
+
+def cmd_list():
+    workspaces = get_workspaces()
+    active = get_active_tmux_sessions()
+    if not workspaces:
+        print("No workspaces found.")
+        return
+    for ws in workspaces:
+        tmux_name = TMUX_PREFIX + ws["name"]
+        status = "running" if tmux_name in active else "stopped"
+        print(f"  {ws['name']:<16} [{status}]  {ws['desc'][:50]}")
+
+
+def main():
+    args = sys.argv[1:]
+
+    # Top-level flags: strip them out and remember the mode so they apply
+    # to both the bare `cw` menu and shortcuts like `cw NAME`. Default is direct (no tmux).
+    top_use_tmux = False
+    top_bg = False
+    filtered = []
+    for a in args:
+        if a in ("--no-tmux", "--direct"):
+            top_use_tmux = False
+        elif a == "--tmux":
+            top_use_tmux = True
+        elif a == "--bg":
+            top_bg = True
+        else:
+            filtered.append(a)
+    args = filtered
+
+    if not args:
+        show_menu(use_tmux=top_use_tmux, bg=top_bg)
+    elif args[0] == "launch" and len(args) >= 2:
+        name = args[1]
+        resume_session_id = None
+        use_tmux = top_use_tmux
+        bg = top_bg
+        fresh = False
+        seed_file = None
+        rest = args[2:]
+        while rest:
+            if rest[0] == "--session" and len(rest) >= 2:
+                resume_session_id = rest[1]
+                rest = rest[2:]
+            elif rest[0] in ("--no-tmux", "--direct"):
+                use_tmux = False
+                rest = rest[1:]
+            elif rest[0] == "--tmux":
+                use_tmux = True
+                rest = rest[1:]
+            elif rest[0] == "--bg":
+                bg = True
+                rest = rest[1:]
+            elif rest[0] == "--fresh":
+                fresh = True
+                rest = rest[1:]
+            elif rest[0] == "--seed" and len(rest) >= 2:
+                seed_file = rest[1]
+                fresh = True  # seeding implies a fresh session
+                rest = rest[2:]
+            else:
+                print(f"  {RED}Unknown argument: {rest[0]}{RESET}")
+                print_usage()
+                return
+        launch_workspace(name, resume_session_id=resume_session_id, use_tmux=use_tmux,
+                         fresh=fresh, seed_file=seed_file, bg=bg)
+    elif args[0] == "list":
+        cmd_list()
+    elif args[0] == "create" and len(args) >= 2:
+        name = args[1]
+        desc = " ".join(args[2:]) if len(args) > 2 else "General workspace"
+        workspace_dir = WORKSPACES_DIR / name
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "CLAUDE.md").write_text(f"# {name.title()} Workspace\n\n{desc}\n")
+        print(f"Created workspace '{name}'")
+    elif args[0] == "rename" and len(args) >= 3:
+        rename_workspace(args[1], args[2])
+    elif args[0] == "stop" and len(args) >= 2:
+        stop_workspace(args[1])
+    elif args[0] == "delete" and len(args) >= 2:
+        delete_workspace(args[1])
+    elif args[0] == "compact" and len(args) >= 2:
+        name = args[1]
+        flags = args[2:]
+        if "--apply" in flags:
+            compact_apply(name)
+        elif "--undo" in flags:
+            compact_undo(name)
+        elif "--discard" in flags:
+            compact_discard(name)
+        else:
+            compact_plan(name)
+    elif args[0] == "handoff" and len(args) >= 2:
+        name = args[1]
+        rest = args[2:]
+        if "--from-jsonl" in rest:
+            cmd_handoff(name, "from-jsonl")
+        elif "--adopt" in rest:
+            try:
+                src = rest[rest.index("--adopt") + 1]
+            except IndexError:
+                print(f"  {RED}--adopt requires a file path.{RESET}")
+                return
+            cmd_handoff(name, "adopt", source=src)
+        else:
+            print(f"  {RED}handoff requires --adopt FILE or --from-jsonl{RESET}")
+    elif args[0] == "rotate" and len(args) >= 2:
+        rotate_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
+    elif args[0] == "archive":
+        sub = args[1] if len(args) >= 2 else "list"
+        if sub == "list":
+            archive_list_cmd()
+        elif sub == "restore" and len(args) >= 3:
+            archive_restore(args[2])
+        else:
+            print(f"  {RED}Usage: archive list  |  archive restore <id>{RESET}")
+    elif args[0] == "purge":
+        rest = args[1:]
+        dry = "--dry-run" in rest
+        days = None
+        if "--older-than" in rest:
+            try:
+                v = rest[rest.index("--older-than") + 1].rstrip("d")
+                days = int(v)
+            except (IndexError, ValueError):
+                print(f"  {RED}--older-than requires a number of days, e.g. --older-than 30d{RESET}")
+                return
+        purge_archives(older_than_days=days, dry_run=dry)
+    elif args[0] in ("-h", "--help", "help"):
+        print_usage()
+    else:
+        print_usage()
+
+
+if __name__ == "__main__":
+    main()
