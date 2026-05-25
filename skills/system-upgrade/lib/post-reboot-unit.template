@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenClaw upgrade post-reboot completion notifier
+After=default.target
+
+[Service]
+Type=oneshot
+Environment=RUN_DIR=__RUN_DIR__
+Environment=SKILL_ROOT=__SKILL_ROOT__
+ExecStart=__SKILL_ROOT__/scripts/post-reboot-notify.sh
+
+[Install]
+WantedBy=default.target
