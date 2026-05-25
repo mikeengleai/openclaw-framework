@@ -1,0 +1,32 @@
+{
+  "name": "Daily OpenClaw System Map",
+  "description": "Generates a comprehensive system map (agents, skills, bindings, cron jobs, memory, MCP servers, plugins, security, infrastructure) via the system-map Python collector and saves a timestamped markdown file to ~/shared/. Read-only.",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "30 5 * * *",
+    "tz": "America/New_York"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "Run the system map collector script. Execute this command and return only the output file path:\n\npython3 ~/.openclaw/skills/system-map/scripts/system_map.py\n\nDo NOT read the SKILL.md or attempt manual collection.",
+    "timeoutSeconds": 120,
+    "model": "google/gemini-2.5-flash",
+    "lightContext": true
+  },
+  "delivery": {
+    "mode": "announce",
+    "channel": "slack",
+    "to": "channel:YOUR_SLACK_CHANNEL_ID",
+    "bestEffort": true
+  },
+  "failureAlert": {
+    "after": 2,
+    "channel": "slack",
+    "to": "channel:YOUR_SLACK_CHANNEL_ID",
+    "cooldownMs": 86400000,
+    "mode": "announce"
+  }
+}
