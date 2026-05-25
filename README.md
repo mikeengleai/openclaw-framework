@@ -1,126 +1,133 @@
 # OpenClaw Framework
 
-A workspace management layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run multiple isolated Claude sessions on a single server, rotate context when sessions get long, and keep a clean handoff between rotations.
+Everything you need to stand up and operate a self-hosted AI agent server built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
-## What this gives you
+This repo contains the scripts, skills, configuration examples, and documentation used to run a production [OpenClaw](https://openclaw.ai) deployment across two servers. Use it as a starting kit for your own build, or fork it and make it yours.
 
-- **Workspaces** — each topic gets its own directory, Claude memory, and session history
-- **Rotation** — when a session accumulates too much context, rotate it: compact memory, generate a handoff document, archive the old session, and launch a fresh one that picks up where you left off
-- **Memory compaction** — a curator pass that deduplicates and tightens your Claude memory files without losing facts
-- **Handoff generation** — auto-generates a structured HANDOFF.md from the outgoing session so the new session has full context
-- **Archive management** — old sessions are stored under `.archive/` with metadata; restore or purge at will
+## What's in the box
 
-## Prerequisites
-
-- Python 3.10+
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
-- tmux (optional, for background session management)
-
-## Install
-
-```bash
-# Clone the repo
-git clone https://github.com/mikeengleai/openclaw-framework.git
-cd openclaw-framework
-
-# Copy the workspace manager to your PATH
-cp claude-workspaces ~/bin/claude-workspaces
-chmod +x ~/bin/claude-workspaces
-ln -s ~/bin/claude-workspaces ~/bin/cw
-
-# Copy the compaction prompt
-cp compaction-prompt.md ~/bin/compaction-prompt.md
-
-# Create your workspaces directory
-mkdir -p ~/workspaces
-```
+| Directory | What it is |
+|---|---|
+| `bin/` | **Claude Workspaces** (`cw`) — workspace manager for isolated Claude sessions, context rotation, memory compaction, and handoffs |
+| `skills/system-map/` | **Daily system map** — Python collector that snapshots your entire system (agents, skills, cron, memory, security, Tailscale) to a single markdown file |
+| `skills/system-upgrade/` | **System upgrade** — 10 checkpointed bash scripts for safe, rollback-capable OS and OpenClaw upgrades |
+| `guide/` | **Companion build guide** — 14-section step-by-step guide from Tailscale account creation to troubleshooting |
+| `server-maps/` | **Example server map** — a real production system map snapshot so you can see what the output looks like |
+| `examples/cron/` | **Cron job templates** — sample scheduled jobs (daily system map, daily backup) |
+| `examples/agents/` | **Agent config examples** — model provider configuration with placeholder API keys |
 
 ## Quick start
 
+### Prerequisites
+
+1. A server — Mac Mini at home, or a VPS from [Hostinger](https://hostinger.com) ($10-30/mo), Ubuntu
+2. A [Tailscale](https://tailscale.com) account (free tier covers 100 devices)
+3. An [Anthropic API key](https://console.anthropic.com)
+
+### Install
+
 ```bash
-# Launch the interactive menu
+# Log in as root on your server
+
+# 1. Install Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+
+# 2. Install Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# 3. Log in to your Claude account
+claude login
+
+# 4. Clone this repo
+git clone https://github.com/mikeengleai/openclaw-framework.git
+cd openclaw-framework
+
+# 5. Set up the workspace manager
+cp bin/claude-workspaces ~/bin/claude-workspaces
+chmod +x ~/bin/claude-workspaces
+ln -s ~/bin/claude-workspaces ~/bin/cw
+cp bin/compaction-prompt.md ~/bin/compaction-prompt.md
+
+# 6. Create your workspaces directory
+mkdir -p ~/workspaces
+
+# 7. Launch the workspace manager
 cw
-
-# Create a workspace
-cw create myproject "Building a web scraper"
-
-# Launch it
-cw launch myproject
-
-# When the session gets long, rotate it
-cw rotate myproject
 ```
 
-## Commands
+## Components
 
-### Core
+### Claude Workspaces (`bin/claude-workspaces`)
 
-| Command | Description |
-|---|---|
-| `cw` | Interactive menu |
-| `cw launch NAME` | Launch or reattach to a workspace |
-| `cw list` | List workspaces and their status |
-| `cw create NAME [DESC]` | Create a new workspace |
-| `cw rename OLD NEW` | Rename a workspace |
-| `cw stop NAME` | Stop a running tmux session |
-| `cw delete NAME` | Delete a workspace (confirms first) |
+Workspace manager for Claude Code sessions. Each workspace is a topic-scoped directory with its own memory and session history.
 
-### Launch flags
+- **Launch/resume** workspaces in tmux, direct shell, or background (agent view)
+- **Rotate** sessions when context gets long: compact memory, generate handoff, archive, fresh launch
+- **Memory compaction** with LLM-driven curation (dedup, tighten, remove stale entries)
+- **Handoff generation** produces structured HANDOFF.md for seamless session transitions
+- **Archive management** with restore and purge
 
-| Flag | Effect |
-|---|---|
-| `--tmux` | Run inside a tmux session |
-| `--bg` | Run in background (agent view, visible in claude.ai) |
-| `--fresh` | Start a new session (auto-seeds HANDOFF.md if present) |
-| `--seed FILE` | Use FILE as the initial prompt (implies --fresh) |
-| `--session ID` | Resume a specific Claude session by ID |
-
-### Memory compaction
-
-| Command | Description |
-|---|---|
-| `cw compact NAME` | Stage a compacted version of memory (dry-run) |
-| `cw compact NAME --apply` | Apply the staged compaction |
-| `cw compact NAME --discard` | Throw away the staged version |
-| `cw compact NAME --undo` | Restore from the most recent backup |
-
-### Rotation and archival
-
-| Command | Description |
-|---|---|
-| `cw rotate NAME` | Full rotation: compact + handoff + archive + fresh launch |
-| `cw handoff NAME --from-jsonl` | Generate HANDOFF.md from the last session |
-| `cw handoff NAME --adopt FILE` | Use an existing markdown as the handoff |
-| `cw archive list` | Show archived workspaces |
-| `cw archive restore ID` | Restore an archived workspace |
-| `cw purge [--older-than Nd]` | Delete old archives |
-
-## File layout
-
-```
-~/workspaces/
-  myproject/
-    CLAUDE.md          # Project instructions for Claude
-    HANDOFF.md         # Context bridge between rotations
-    LINEAGE.md         # Rotation history
-  .archive/
-    myproject-20260524-143000/
-      workspace/       # Archived workspace files
-      project/         # Archived Claude project dir
-      rotation-meta.json
+```bash
+cw                        # Interactive menu
+cw launch myproject       # Launch a workspace
+cw rotate myproject       # Full rotation: compact + handoff + archive + fresh
+cw archive list           # See archived sessions
 ```
 
-## How rotation works
+### Daily System Map (`skills/system-map/`)
 
-1. You are deep in a session and hitting context limits
-2. Run `cw rotate myproject`
-3. The tool compacts your memory files (dedup, tighten, remove stale entries)
-4. Generates a HANDOFF.md summarizing everything in flight
-5. Archives the old workspace and Claude project directory
-6. Creates a fresh workspace with the same name, carrying forward CLAUDE.md, compacted memory, and HANDOFF.md
-7. Launches a new Claude session seeded with the handoff
+A Python script that generates a comprehensive markdown snapshot of your entire system. Runs daily via cron.
 
-The new session starts with full context of what was happening, without the bloated conversation history.
+Covers: infrastructure, agents (configs, models, bindings), skills, cron jobs, memory files, security rules, plugins, Tailscale nodes, scripts, and more.
+
+```bash
+python3 skills/system-map/scripts/system_map.py
+```
+
+### System Upgrade (`skills/system-upgrade/`)
+
+10 checkpointed bash scripts for safe server upgrades. Each script can run independently and be rolled back.
+
+```
+00-preflight.sh          → Pre-flight checks
+10-backup-files.sh       → Back up critical files
+20-version-discover.sh   → Check available versions
+30-recon.sh              → System reconnaissance
+40-pre-upgrade-snapshot.sh → Hostinger snapshot + quiesce
+50-apt-upgrade.sh        → OS package upgrades
+60-openclaw-upgrade.sh   → OpenClaw upgrade
+70-post-upgrade-verify.sh → Post-upgrade verification
+99-reboot.sh             → Safe reboot with notification
+post-reboot-notify.sh    → Confirm services came back up
+```
+
+Includes per-host configuration files and a detailed RUNBOOK.
+
+### Companion Build Guide (`guide/companion-guide.md`)
+
+14-section implementation guide covering:
+
+1. Create a Tailscale account
+2. Sign up for a VPS
+3. Lock down the Linux server
+4. Install Node.js, Python, SQLite, tmux
+5. Install OpenClaw
+6. Configure your first agent
+7. Set up QMD memory
+8. Set up the browsing service
+9. Connect Slack
+10. Schedule your first cron job
+11. Set up ntfy.sh push notifications
+12. Map a Tailscale shared drive
+13. The `cw` workflow
+14. Troubleshooting
+
+## Resources
+
+- **Presentation deck:** [openclaw-deck-9tm.pages.dev](https://openclaw-deck-9tm.pages.dev)
+- **OpenClaw:** [openclaw.ai](https://openclaw.ai)
+- **Claude Code:** [docs.anthropic.com/en/docs/claude-code](https://docs.anthropic.com/en/docs/claude-code)
 
 ## License
 

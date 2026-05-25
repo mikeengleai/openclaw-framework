@@ -1,0 +1,52 @@
+{
+  "providers": {
+    "anthropic": {
+      "baseUrl": "https://api.anthropic.com/v1",
+      "api": "anthropic-messages",
+      "models": [
+        {
+          "id": "claude-sonnet-4-6-20250725",
+          "name": "Claude Sonnet 4.6",
+          "reasoning": false,
+          "input": ["text", "image"],
+          "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        }
+      ],
+      "apiKey": "ANTHROPIC_API_KEY"
+    },
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "openrouter/auto",
+          "name": "OpenRouter Auto",
+          "reasoning": false,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        }
+      ],
+      "apiKey": "OPENROUTER_API_KEY"
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "name": "DeepSeek Chat",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": { "input": 0.28, "output": 0.42, "cacheRead": 0.028, "cacheWrite": 0 },
+          "contextWindow": 131072,
+          "maxTokens": 8192
+        }
+      ],
+      "apiKey": "DEEPSEEK_API_KEY"
+    }
+  }
+}

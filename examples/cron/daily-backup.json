@@ -1,0 +1,21 @@
+{
+  "name": "Daily OpenClaw Backup",
+  "description": "Runs the daily backup script for OpenClaw configuration and data files.",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "20 22 * * *",
+    "tz": "UTC"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "It's time for the daily OpenClaw backup. Please run the following command: ./backup-openclaw-with-notify.sh",
+    "thinking": "low"
+  },
+  "delivery": {
+    "mode": "announce",
+    "bestEffort": true
+  }
+}
