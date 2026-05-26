@@ -91,37 +91,32 @@ sudo tailscale up
 
 ---
 
-## What to install on your Linux machine (all options)
+## After you have a Linux prompt (all options)
 
-Once you have a Linux prompt and Tailscale running:
+Two commands to bootstrap, then Claude Code handles the rest.
+
+### Step 1: Bootstrap (installs Node.js + Claude Code)
 
 ```bash
-# Update packages
-sudo apt update && sudo apt upgrade -y
+curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
+```
 
-# Node.js 20 (required for Claude Code)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+### Step 2: Authenticate
 
-# Python, SQLite, tmux, git
-sudo apt install -y python3 python3-pip python3-venv sqlite3 tmux git curl jq
-
-# Claude Code
-npm install -g @anthropic-ai/claude-code
-
-# Log in to Claude
+```bash
 claude login
-
-# Clone and install the OpenClaw framework
-git clone https://github.com/mikeengleai/openclaw-framework.git ~/openclaw-framework
-~/openclaw-framework/install.sh
-source ~/.bashrc
 ```
 
-Verify everything works:
+Follow the browser link to authenticate with your Anthropic account.
+
+### Step 3: Let Claude Code do the rest
 
 ```bash
-cw
+claude
 ```
 
-You should see the Claude Code Workspace Manager interactive menu.
+Once Claude Code is running, paste this prompt:
+
+> Install the OpenClaw framework from https://github.com/mikeengleai/openclaw-framework.git — clone it to ~/openclaw-framework, run the install.sh script, then install all system dependencies (python3, python3-pip, python3-venv, sqlite3, tmux, curl, jq, tailscale). After everything is installed, run "cw" to verify the workspace manager works.
+
+Claude Code will install everything, configure your PATH, and verify the setup. You just approve the commands as it goes.
