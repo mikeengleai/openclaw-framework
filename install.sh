@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# install.sh — Set up OpenClaw Framework tools from this repo.
-# Run after cloning: ~/openclaw-framework/install.sh
+# install.sh — Install OpenClaw Framework tools from this repo into ~/bin.
+# Called by Claude Code as part of the server setup process.
+#
+# Usage: ~/openclaw-framework/install.sh
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$HOME/bin"
-WORKSPACES_DIR="$HOME/workspaces"
 
 echo "Installing OpenClaw Framework from $REPO_DIR"
 echo
@@ -36,21 +37,10 @@ cp "$REPO_DIR/bin/import-cookies" "$BIN_DIR/import-cookies"
 chmod +x "$BIN_DIR/import-cookies"
 echo "  Installed import-cookies → ~/bin/"
 
-# 5. Install python cryptography dependency (needed for cookie import)
-pip3 install --quiet cryptography 2>/dev/null || pip3 install --quiet --break-system-packages cryptography 2>/dev/null || true
-
-# 6. Create agent-browser profile directory
+# 5. Create directories
+mkdir -p "$HOME/workspaces"
 mkdir -p "$HOME/.agent-browser/profiles"
-echo "  Created ~/.agent-browser/profiles/"
+echo "  Created ~/workspaces/ and ~/.agent-browser/profiles/"
 
-# 7. Create workspaces directory
-mkdir -p "$WORKSPACES_DIR"
-echo "  Created ~/workspaces/"
-
-# 5. Verify
 echo
-if command -v cw &>/dev/null; then
-  echo "Done. Run 'cw' to start the workspace manager."
-else
-  echo "Done. Run 'source ~/.bashrc' (or restart your shell), then 'cw'."
-fi
+echo "Done. Run 'source ~/.bashrc' then 'cw' to start."
