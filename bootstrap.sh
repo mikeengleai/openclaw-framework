@@ -2,7 +2,7 @@
 # bootstrap.sh — Minimum bootstrap to get Claude Code running.
 # Claude Code handles all remaining setup from the README instructions.
 #
-# Usage:
+# Run as root on a fresh Ubuntu server:
 #   curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
 
 set -euo pipefail
@@ -10,38 +10,59 @@ set -euo pipefail
 echo "=== OpenClaw Bootstrap ==="
 echo
 
-# 1. Install Node.js 20 (required for Claude Code)
+# Must run as root
+if [[ $EUID -ne 0 ]]; then
+  echo "Error: run this script as root (or with sudo)."
+  exit 1
+fi
+
+# 1. Install Node.js 20
 if command -v node &>/dev/null && [[ "$(node -v)" == v2* ]]; then
   echo "Node.js $(node -v) already installed."
 else
   echo "Installing Node.js 20..."
-  sudo apt update -qq
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt install -y -qq nodejs
+  apt update -qq
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt install -y -qq nodejs
 fi
 
-# 2. Install git (Claude Code needs it to clone the framework repo)
+# 2. Install git
 if ! command -v git &>/dev/null; then
   echo "Installing git..."
-  sudo apt install -y -qq git
+  apt install -y -qq git
 fi
 
 # 3. Install Claude Code
 echo "Installing Claude Code..."
-sudo npm install -g @anthropic-ai/claude-code
+npm install -g @anthropic-ai/claude-code
+
+# 4. Create the openclaw user (if it doesn't exist)
+if id openclaw &>/dev/null; then
+  echo "User 'openclaw' already exists."
+else
+  echo "Creating user 'openclaw'..."
+  adduser --disabled-password --gecos "OpenClaw" openclaw
+  usermod -aG sudo openclaw
+  # Allow passwordless sudo for the session (user can tighten later)
+  echo "openclaw ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/openclaw
+  echo "  Created user 'openclaw' with sudo access."
+fi
 
 echo
 echo "=== Bootstrap complete ==="
 echo
 echo "Next steps:"
 echo
-echo "  1. claude login"
-echo "  2. claude --dangerously-skip-permissions"
-echo "  3. Paste this prompt:"
+echo "  1. Switch to the openclaw user:"
+echo "     su - openclaw"
 echo
-cat <<'PROMPT'
-     Follow the setup instructions at https://github.com/mikeengleai/openclaw-framework
-     to configure this server. Clone the repo, run the install script, install OpenClaw,
-     install all dependencies, and verify everything works.
-PROMPT
+echo "  2. Authenticate Claude Code:"
+echo "     claude login"
+echo
+echo "  3. Start Claude Code:"
+echo "     claude --dangerously-skip-permissions"
+echo
+echo "  4. Paste this prompt:"
+echo "     Follow the setup instructions in the \"Server setup (for Claude Code)\" section"
+echo "     of https://github.com/mikeengleai/openclaw-framework to configure this server."
 echo
