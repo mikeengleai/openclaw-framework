@@ -56,13 +56,19 @@ echo
 echo "  1. Switch to the openclaw user:"
 echo "     su - openclaw"
 echo
-echo "  2. Authenticate Claude Code:"
-echo "     claude login"
+echo "  2. Install and onboard OpenClaw:"
+echo "     sudo npm install -g openclaw"
+echo "     openclaw setup"
+echo "     openclaw onboard"
 echo
-echo "  3. Start Claude Code:"
+echo "  3. Install tools and dependencies:"
+echo "     curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash"
+echo
+echo "  4. Authenticate Claude Code:"
 echo "     claude --dangerously-skip-permissions"
+echo "     /login"
 echo
-echo "  4. Paste this prompt:"
-echo "     Follow the setup instructions in the \"Server setup (for Claude Code)\" section"
-echo "     of https://github.com/mikeengleai/openclaw-framework to configure this server."
+echo "  5. Start the gateway and build:"
+echo "     nohup openclaw gateway --foreground &>/dev/null &"
+echo "     source ~/.bashrc && cw"
 echo
