@@ -989,7 +989,7 @@ def print_usage():
   while the bloated history is archived behind the scenes.
 
   {BOLD}Core commands:{RESET}
-    cw [--tmux] [--bg]                Interactive menu (default: direct/no-tmux)
+    cw [--no-tmux] [--bg]             Interactive menu (default: tmux)
     cw launch NAME [flags]            Launch / reattach to a workspace
         flags:
           --session ID      Resume a specific Claude session
@@ -998,8 +998,8 @@ def print_usage():
           --seed FILE       Use FILE as the initial-prompt seed (implies --fresh)
           --bg              Launch in background mode (agent view); visible in
                             claude.ai/code, desktop app, and `claude agents`
-          --tmux            Run claude inside a tmux session (opt-in)
-          --no-tmux         Force direct mode (default)
+          --tmux            Run claude inside a tmux session (default)
+          --no-tmux         Force direct mode (no tmux)
     cw list                           List workspaces and status
     cw create NAME [DESC...]          Create a new workspace
     cw rename OLD NEW                  Rename a workspace (dir, project, sessions)
@@ -1029,8 +1029,8 @@ def print_usage():
     [q]  Quit
 
   {BOLD}Launch modes:{RESET}
-    Default is direct (no tmux). Pass a flag before any subcommand to opt in:
-        cw --tmux launch sales          Run inside a tmux session
+    Default is tmux. Pass a flag before any subcommand to change:
+        cw --no-tmux launch sales       Run directly in current shell
         cw --bg launch sales            Run in background (agent view)
         cw --bg                         Open interactive menu in bg mode
     Inside the interactive menu, press [b] or [t] to toggle modes.
@@ -1068,8 +1068,8 @@ def main():
     args = sys.argv[1:]
 
     # Top-level flags: strip them out and remember the mode so they apply
-    # to both the bare `cw` menu and shortcuts like `cw NAME`. Default is direct (no tmux).
-    top_use_tmux = False
+    # to both the bare `cw` menu and shortcuts like `cw NAME`. Default is tmux.
+    top_use_tmux = True
     top_bg = False
     filtered = []
     for a in args:
