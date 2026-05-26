@@ -56,12 +56,15 @@ sudo npm install -g openclaw
 openclaw init
 ```
 
-### Step 3: Install agent-browser
+### Step 3: Install agent-browser and Chrome
 
 ```bash
 sudo npm install -g agent-browser
+agent-browser install --with-deps
 mkdir -p ~/.agent-browser/profiles
 ```
+
+`agent-browser install --with-deps` downloads a compatible Chrome binary and installs the system libraries it needs (libx11, libatk, libcups, etc.). This is required before any browsing will work.
 
 ### Step 4: Install Tailscale (if not already installed)
 
