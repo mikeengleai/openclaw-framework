@@ -56,6 +56,7 @@ else
   git clone https://github.com/mikeengleai/openclaw-framework.git "$HOME/openclaw-framework"
 fi
 "$HOME/openclaw-framework/install.sh"
+export PATH="$HOME/bin:$PATH"
 echo "  Done."
 
 # 5. Superpowers plugin for Claude Code
@@ -111,5 +112,10 @@ echo "Next steps:"
 echo
 echo "  1. If Tailscale needs auth:  sudo tailscale up"
 echo "  2. Start the gateway:        nohup openclaw gateway --foreground &>/dev/null &"
-echo "  3. Reload PATH and start:    source ~/.bashrc && cw"
+echo "  3. Authenticate Claude Code: claude --dangerously-skip-permissions  then type /login"
+echo
+echo "  *** IMPORTANT: Run this first to load the new tools into your shell ***"
+echo "  source ~/.bashrc"
+echo
+echo "  Then: cw"
 echo
