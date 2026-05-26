@@ -39,20 +39,11 @@ npm install -g @anthropic-ai/claude-code
 # 3. Log in to your Claude account
 claude login
 
-# 4. Clone this repo
-git clone https://github.com/mikeengleai/openclaw-framework.git
-cd openclaw-framework
+# 4. Clone and install this repo
+git clone https://github.com/mikeengleai/openclaw-framework.git ~/openclaw-framework
+~/openclaw-framework/install.sh
 
-# 5. Set up the workspace manager
-cp bin/claude-workspaces ~/bin/claude-workspaces
-chmod +x ~/bin/claude-workspaces
-ln -s ~/bin/claude-workspaces ~/bin/cw
-cp bin/compaction-prompt.md ~/bin/compaction-prompt.md
-
-# 6. Create your workspaces directory
-mkdir -p ~/workspaces
-
-# 7. Launch the workspace manager
+# 5. Launch the workspace manager
 cw
 ```
 
