@@ -12,18 +12,28 @@ This repo contains the scripts, skills, configuration examples, and documentatio
 2. A **Claude** account ($20/mo Max plan) — [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
 3. A **Linux server** — Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
 
-### Three commands to get started
+### Step 1: Bootstrap (as root)
 
-SSH into your server, then:
+SSH into your server and run:
 
 ```bash
-# 1. Bootstrap (installs Node.js + Claude Code)
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
+```
 
-# 2. Authenticate
+This installs Node.js, git, Claude Code, and creates the `openclaw` user.
+
+### Step 2: Switch to the openclaw user and authenticate
+
+```bash
+su - openclaw
 claude login
+```
 
-# 3. Let Claude Code set up everything else
+Follow the browser link to authenticate with your Anthropic account.
+
+### Step 3: Let Claude Code set up everything else
+
+```bash
 claude --dangerously-skip-permissions
 ```
 
@@ -31,9 +41,55 @@ When Claude Code starts, paste this prompt:
 
 > Follow the setup instructions in the "Server setup (for Claude Code)" section of https://github.com/mikeengleai/openclaw-framework to configure this server.
 
-Claude Code handles all remaining installation and configuration. You just approve the commands as it goes.
+Claude Code handles all remaining installation and configuration. You just approve the commands as it goes. When it finishes and reports verification results, exit Claude Code.
 
-After setup is complete, exit Claude Code and run `cw` to create your first workspace.
+### Step 4: Connect WhatsApp (manual step — must be done outside Claude Code)
+
+This step requires you to scan a QR code, so it must be run directly in the terminal, not inside Claude Code.
+
+```bash
+# Install the WhatsApp plugin
+openclaw plugins install @openclaw/whatsapp
+
+# Add the channel
+openclaw channels add --channel whatsapp
+
+# Link your phone — a QR code will appear in the terminal
+# Scan it with WhatsApp on your phone: Settings → Linked Devices → Link a Device
+openclaw channels login --channel whatsapp
+```
+
+**Tip:** If the QR code is too large for your terminal, use Ctrl+scroll wheel to shrink the font, or maximize the window first.
+
+After scanning, configure the gateway:
+
+```bash
+# Set gateway mode
+openclaw config set gateway.mode local
+
+# Find your WhatsApp user ID
+openclaw channels resolve whatsapp <your-phone-number>
+
+# Set yourself as the command owner (replace the ID below with your actual ID)
+openclaw config set commands.ownerAllowFrom '["whatsapp:<your-whatsapp-id>"]'
+
+# Run the doctor to clean up and validate
+openclaw doctor
+
+# Start the gateway (foreground, since systemd user services may not be available)
+nohup openclaw gateway --foreground &>/dev/null &
+```
+
+**Alternative channels:** Replace `whatsapp` with `slack` or `telegram` in the commands above. For Slack, use `openclaw plugins install @openclaw/slack`. For Telegram, use `openclaw plugins install clawhub:@openclaw/telegram`.
+
+### Step 5: Start building
+
+```bash
+source ~/.bashrc
+cw
+```
+
+Select **[n] Create new workspace**, give it a name, and launch it. You're now in an isolated Claude Code session with its own memory. Tell it what you want to build.
 
 ---
 
@@ -56,6 +112,8 @@ sudo npm install -g openclaw
 openclaw init
 ```
 
+If `openclaw init` is not a valid command in this version, skip it — OpenClaw will create its config directory on first use.
+
 ### Step 3: Install agent-browser and Chrome
 
 ```bash
@@ -73,7 +131,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 ```
 
-The user will need to authenticate via the browser link that Tailscale prints.
+The user will need to authenticate via the browser link that Tailscale prints. If Tailscale is already installed, skip this step.
 
 ### Step 5: Clone and install this framework
 
@@ -94,7 +152,21 @@ This installs:
 mkdir -p ~/workspaces
 ```
 
-### Step 7: Verify everything works
+### Step 7: Configure gateway mode
+
+```bash
+openclaw config set gateway.mode local
+```
+
+### Step 8: Run doctor
+
+```bash
+openclaw doctor
+```
+
+This cleans up unavailable skills/plugins and validates the configuration.
+
+### Step 9: Verify everything works
 
 Run each of these and confirm they succeed:
 
@@ -106,41 +178,28 @@ tmux -V                    # tmux
 openclaw --version         # OpenClaw
 agent-browser --version    # agent-browser
 cw --help                  # Claude Workspaces
-tailscale status           # Tailscale connected
 ```
 
 Report the results to the user. If anything failed, fix it before proceeding.
+
+Tell the user: "Server setup is complete. Exit Claude Code, then follow Step 4 in the README to connect WhatsApp (this must be done outside Claude Code because you need to scan a QR code). After that, run `cw` to create your first workspace."
 
 ---
 
 ## After setup: using the system
 
-### Create your first workspace
+### Import browser cookies (for authenticated browsing)
 
-Exit Claude Code, then:
+Export cookies from your laptop browser using the [Cookie-Editor](https://cookie-editor.com) extension, then inside a `cw` workspace paste the JSON into Claude Code:
 
-```bash
-cw
-```
+> Import these YouTube cookies into an agent-browser profile called "youtube":
+> ```
+> [paste JSON here]
+> ```
 
-Select **[n] Create new workspace**, give it a name and description. Launch it. You're now in an isolated Claude Code session with its own memory.
+Or send the cookie JSON via WhatsApp to your agent once the channel is connected.
 
-### Connect a messaging channel (WhatsApp, Slack, Telegram)
-
-From inside Claude Code or from the command line:
-
-```bash
-# Install the channel plugin (pick one)
-openclaw plugins install @openclaw/whatsapp
-openclaw plugins install @openclaw/slack
-openclaw plugins install clawhub:@openclaw/telegram
-
-# Add the channel
-openclaw channels add --channel whatsapp    # guided setup
-openclaw channels login --channel whatsapp  # scan QR code with your phone
-```
-
-For WhatsApp: a QR code appears in the terminal. Scan it with WhatsApp on your phone. This is the one step that requires manual interaction.
+See the full [authenticated browsing guide](guide/authenticated-browsing.md) for details on exit nodes and profile management.
 
 ### Create your first agent
 
@@ -149,15 +208,6 @@ Inside a `cw` workspace, tell Claude Code what you want:
 > Create a web research agent that can browse the web and search YouTube. It should be able to answer questions by searching the internet and summarizing what it finds.
 
 Claude Code will configure the agent, set up the browsing profile, and wire it to your messaging channel.
-
-### Import browser cookies (for authenticated browsing)
-
-Export cookies from your laptop browser using the [Cookie-Editor](https://cookie-editor.com) extension, then either:
-
-- **Via messaging:** Paste the JSON into your WhatsApp/Slack channel with "import these cookies into the youtube profile"
-- **Via command line:** `import-cookies --profile youtube --from ~/cookies.json`
-
-See the full [authenticated browsing guide](guide/authenticated-browsing.md) for details on exit nodes and profile management.
 
 ---
 
