@@ -31,7 +31,19 @@ echo "  Installed claude-workspaces → ~/bin/cw"
 cp "$REPO_DIR/bin/compaction-prompt.md" "$BIN_DIR/compaction-prompt.md"
 echo "  Installed compaction-prompt.md → ~/bin/"
 
-# 4. Create workspaces directory
+# 4. Install cookie import tool
+cp "$REPO_DIR/bin/import-cookies" "$BIN_DIR/import-cookies"
+chmod +x "$BIN_DIR/import-cookies"
+echo "  Installed import-cookies → ~/bin/"
+
+# 5. Install python cryptography dependency (needed for cookie import)
+pip3 install --quiet cryptography 2>/dev/null || pip3 install --quiet --break-system-packages cryptography 2>/dev/null || true
+
+# 6. Create agent-browser profile directory
+mkdir -p "$HOME/.agent-browser/profiles"
+echo "  Created ~/.agent-browser/profiles/"
+
+# 7. Create workspaces directory
 mkdir -p "$WORKSPACES_DIR"
 echo "  Created ~/workspaces/"
 

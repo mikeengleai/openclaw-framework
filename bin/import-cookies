@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Import browser cookies into an agent-browser Chrome profile.
+
+Reads cookies exported from a browser extension (JSON or Netscape format)
+and writes them into the Chrome Cookies SQLite database used by agent-browser.
+
+Usage:
+  python3 import_cookies.py --profile my-profile --from cookies.json
+  python3 import_cookies.py --profile my-profile --from cookies.txt --format netscape
+  python3 import_cookies.py --profile my-profile --from cookies.json --domain .linkedin.com
+  python3 import_cookies.py --profile my-profile --from cookies.json --clear-existing
+  python3 import_cookies.py --profile my-profile --list
+
+Supported JSON formats:
+  - Cookie-Editor extension (array of {name, value, domain, path, ...})
+  - EditThisCookie extension (same shape)
+
+Supported text formats:
+  - Netscape/curl cookies.txt (tab-separated, # comments)
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+from cryptography.hazmat.primitives.ciphers import Cipher
+from cryptography.hazmat.primitives.ciphers.algorithms import AES
+from cryptography.hazmat.primitives.ciphers.modes import CBC
+
+
+PROFILES_DIR = Path.home() / ".agent-browser" / "profiles"
+
+# Linux Chrome v10 encryption constants
+_CHROME_PASSWORD = b"peanuts"
+_CHROME_SALT = b"saltysalt"
+_CHROME_IV = b" " * 16  # 16 spaces
+
+
+def _derive_key():
+    return hashlib.pbkdf2_hmac("sha1", _CHROME_PASSWORD, _CHROME_SALT, 1, dklen=16)
+
+
+def _encrypt_v10(plaintext):
+    """Encrypt a cookie value using Chrome v10 format (Linux, no-sandbox)."""
+    key = _derive_key()
+    data = plaintext.encode("utf-8")
+    # PKCS7 pad to 16-byte boundary
+    pad_len = 16 - (len(data) % 16)
+    data += bytes([pad_len] * pad_len)
+    cipher = Cipher(AES(key), CBC(_CHROME_IV))
+    encryptor = cipher.encryptor()
+    encrypted = encryptor.update(data) + encryptor.finalize()
+    return b"v10" + encrypted
+
+
+def _decrypt_v10(blob):
+    """Decrypt a Chrome v10 encrypted cookie value."""
+    key = _derive_key()
+    cipher = Cipher(AES(key), CBC(_CHROME_IV))
+    decryptor = cipher.decryptor()
+    decrypted = decryptor.update(blob[3:]) + decryptor.finalize()
+    pad_len = decrypted[-1]
+    if pad_len <= 16:
+        decrypted = decrypted[:-pad_len]
+    return decrypted.decode("utf-8", errors="replace")
+
+
+def _chrome_timestamp(epoch_seconds):
+    """Convert Unix epoch seconds to Chrome timestamp (microseconds since 1601-01-01)."""
+    return int((epoch_seconds + 11644473600) * 1_000_000)
+
+
+def _now_chrome():
+    return _chrome_timestamp(time.time())
+
+
+def _samesite_to_int(val):
+    """Convert sameSite string/value to Chrome integer."""
+    if isinstance(val, int):
+        return val
+    mapping = {"no_restriction": 0, "none": 0, "lax": 1, "strict": 2, "unspecified": -1}
+    return mapping.get(str(val).lower(), -1)
+
+
+def _parse_json_cookies(filepath):
+    """Parse JSON cookie export (Cookie-Editor / EditThisCookie format)."""
+    with open(filepath) as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        print(f"Error: expected JSON array, got {type(data).__name__}", file=sys.stderr)
+        sys.exit(1)
+
+    cookies = []
+    for c in data:
+        expiry = c.get("expirationDate") or c.get("expires") or c.get("expiry") or 0
+        if isinstance(expiry, str):
+            expiry = float(expiry) if expiry else 0
+        cookies.append({
+            "name": c["name"],
+            "value": c["value"],
+            "domain": c.get("domain", ""),
+            "path": c.get("path", "/"),
+            "expires": float(expiry),
+            "secure": bool(c.get("secure", False)),
+            "httponly": bool(c.get("httpOnly", False)),
+            "samesite": _samesite_to_int(c.get("sameSite", "unspecified")),
+        })
+    return cookies
+
+
+def _parse_netscape_cookies(filepath):
+    """Parse Netscape/curl cookies.txt format."""
+    cookies = []
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            domain, _flag, path, secure, expires, name, value = parts[:7]
+            cookies.append({
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path,
+                "expires": float(expires) if expires else 0,
+                "secure": secure.upper() == "TRUE",
+                "httponly": False,
+                "samesite": -1,
+            })
+    return cookies
+
+
+def _get_cookies_db(profile):
+    """Get path to Cookies SQLite database for a profile."""
+    return PROFILES_DIR / profile / "Default" / "Cookies"
+
+
+def _ensure_db(db_path):
+    """Create the Cookies database with Chrome's schema if it doesn't exist."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cookies(
+            creation_utc INTEGER NOT NULL,
+            host_key TEXT NOT NULL,
+            top_frame_site_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            encrypted_value BLOB NOT NULL,
+            path TEXT NOT NULL,
+            expires_utc INTEGER NOT NULL,
+            is_secure INTEGER NOT NULL,
+            is_httponly INTEGER NOT NULL,
+            last_access_utc INTEGER NOT NULL,
+            has_expires INTEGER NOT NULL,
+            is_persistent INTEGER NOT NULL,
+            priority INTEGER NOT NULL,
+            samesite INTEGER NOT NULL,
+            source_scheme INTEGER NOT NULL,
+            source_port INTEGER NOT NULL,
+            last_update_utc INTEGER NOT NULL,
+            source_type INTEGER NOT NULL,
+            has_cross_site_ancestor INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS cookies_unique_index
+        ON cookies(host_key, top_frame_site_key, name, path, source_scheme, source_port,
+                   has_cross_site_ancestor)
+    """)
+    conn.commit()
+    conn.close()
+
+
+def import_cookies(profile, cookies, domain_filter=None, clear_existing=False):
+    """Import cookies into an agent-browser profile's Chrome Cookies database."""
+    db_path = _get_cookies_db(profile)
+    _ensure_db(db_path)
+
+    if domain_filter:
+        cookies = [c for c in cookies if domain_filter in c["domain"]]
+
+    conn = sqlite3.connect(str(db_path))
+    now = _now_chrome()
+
+    if clear_existing:
+        if domain_filter:
+            conn.execute("DELETE FROM cookies WHERE host_key LIKE ?", (f"%{domain_filter}%",))
+        else:
+            conn.execute("DELETE FROM cookies")
+
+    imported = 0
+    skipped = 0
+    for c in cookies:
+        encrypted_value = _encrypt_v10(c["value"])
+        expires_utc = _chrome_timestamp(c["expires"]) if c["expires"] > 0 else 0
+        has_expires = 1 if c["expires"] > 0 else 0
+        source_scheme = 2 if c["secure"] else 1
+
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO cookies
+                   (creation_utc, host_key, top_frame_site_key, name, value,
+                    encrypted_value, path, expires_utc, is_secure, is_httponly,
+                    last_access_utc, has_expires, is_persistent, priority, samesite,
+                    source_scheme, source_port, last_update_utc, source_type,
+                    has_cross_site_ancestor)
+                   VALUES (?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, -1, ?, 0, 0)""",
+                (now, c["domain"], c["name"], encrypted_value, c["path"],
+                 expires_utc, int(c["secure"]), int(c["httponly"]),
+                 now, has_expires, has_expires, c["samesite"],
+                 source_scheme, now),
+            )
+            imported += 1
+        except sqlite3.Error as e:
+            print(f"  Warning: failed to import {c['domain']}/{c['name']}: {e}", file=sys.stderr)
+            skipped += 1
+
+    conn.commit()
+    conn.close()
+    return imported, skipped
+
+
+def list_cookies(profile, domain_filter=None):
+    """List cookies in an agent-browser profile."""
+    db_path = _get_cookies_db(profile)
+    if not db_path.exists():
+        print(f"No Cookies database found for profile '{profile}'")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    query = "SELECT host_key, name, is_httponly, is_secure, expires_utc FROM cookies"
+    params = ()
+    if domain_filter:
+        query += " WHERE host_key LIKE ?"
+        params = (f"%{domain_filter}%",)
+    query += " ORDER BY host_key, name"
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    if not rows:
+        qualifier = f" for domain '{domain_filter}'" if domain_filter else ""
+        print(f"No cookies found{qualifier}")
+        return
+
+    print(f"{'Domain':<40} {'Name':<35} {'HTTP':<5} {'Sec':<5}")
+    print("-" * 85)
+    for host, name, httponly, secure, expires in rows:
+        print(f"{host:<40} {name:<35} {'Y' if httponly else '':<5} {'Y' if secure else '':<5}")
+    print(f"\nTotal: {len(rows)} cookies")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Import cookies into an agent-browser Chrome profile",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("--profile", required=True, help="agent-browser profile name")
+    parser.add_argument("--from", dest="source", help="Path to cookie export file")
+    parser.add_argument("--format", choices=["json", "netscape"], default="json",
+                        help="Cookie file format (default: json)")
+    parser.add_argument("--domain", help="Only import cookies matching this domain")
+    parser.add_argument("--clear-existing", action="store_true",
+                        help="Clear existing cookies before import (scoped to --domain if set)")
+    parser.add_argument("--list", action="store_true", help="List cookies in the profile")
+
+    args = parser.parse_args()
+
+    if args.list:
+        list_cookies(args.profile, args.domain)
+        return
+
+    if not args.source:
+        parser.error("--from is required when not using --list")
+
+    if not os.path.exists(args.source):
+        print(f"Error: file not found: {args.source}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == "json":
+        cookies = _parse_json_cookies(args.source)
+    else:
+        cookies = _parse_netscape_cookies(args.source)
+
+    print(f"Parsed {len(cookies)} cookies from {args.source}")
+
+    if args.domain:
+        matching = [c for c in cookies if args.domain in c["domain"]]
+        print(f"  {len(matching)} match domain filter '{args.domain}'")
+
+    imported, skipped = import_cookies(
+        args.profile, cookies,
+        domain_filter=args.domain,
+        clear_existing=args.clear_existing,
+    )
+
+    db_path = _get_cookies_db(args.profile)
+    print(f"Imported {imported} cookies into {db_path}")
+    if skipped:
+        print(f"  ({skipped} skipped due to errors)")
+
+
+if __name__ == "__main__":
+    main()
