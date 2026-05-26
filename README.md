@@ -22,22 +22,20 @@ curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main
 
 This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 
-### Step 2: Switch to the openclaw user and authenticate
+### Step 2: Launch Claude Code and authenticate
 
 ```bash
 su - openclaw
-claude login
-```
-
-Follow the browser link to authenticate with your Anthropic account.
-
-### Step 3: Let Claude Code set up everything else
-
-```bash
 claude --dangerously-skip-permissions
 ```
 
-When Claude Code starts, paste this prompt:
+Once Claude Code starts, type:
+
+```
+/login
+```
+
+Follow the browser link to authenticate with your Anthropic account. After login completes, paste this prompt:
 
 > Follow the setup instructions in the "Server setup (for Claude Code)" section of https://github.com/mikeengleai/openclaw-framework to configure this server.
 
@@ -152,13 +150,21 @@ This installs:
 mkdir -p ~/workspaces
 ```
 
-### Step 7: Configure gateway mode
+### Step 7: Install the Superpowers plugin for Claude Code
+
+```bash
+claude plugins add https://github.com/obra/superpowers
+```
+
+This adds brainstorming, TDD, debugging, and planning skills to all future Claude Code sessions.
+
+### Step 8: Configure gateway mode
 
 ```bash
 openclaw config set gateway.mode local
 ```
 
-### Step 8: Run doctor
+### Step 9: Run doctor
 
 ```bash
 openclaw doctor
@@ -166,7 +172,7 @@ openclaw doctor
 
 This cleans up unavailable skills/plugins and validates the configuration.
 
-### Step 9: Verify everything works
+### Step 10: Verify everything works
 
 Run each of these and confirm they succeed:
 
@@ -182,7 +188,7 @@ cw --help                  # Claude Workspaces
 
 Report the results to the user. If anything failed, fix it before proceeding.
 
-Tell the user: "Server setup is complete. Exit Claude Code, then follow Step 4 in the README to connect WhatsApp (this must be done outside Claude Code because you need to scan a QR code). After that, run `cw` to create your first workspace."
+Tell the user: "Server setup is complete. Exit Claude Code, then follow Step 4 in the Quick Start section of the README to connect WhatsApp (this must be done outside Claude Code because you need to scan a QR code). After that, run `cw` to create your first workspace."
 
 ---
 
