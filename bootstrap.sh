@@ -16,35 +16,27 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# 1. Install Node.js 20
-if command -v node &>/dev/null && [[ "$(node -v)" == v2* ]]; then
-  echo "Node.js $(node -v) already installed."
-else
-  echo "Installing Node.js 20..."
-  apt update -qq
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt install -y -qq nodejs
-fi
-
-# 2. Install git
+# 1. Install git
 if ! command -v git &>/dev/null; then
   echo "Installing git..."
+  apt update -qq
   apt install -y -qq git
 fi
 
+# 2. Install OpenClaw (brings its own Node.js if needed)
+echo "Installing OpenClaw..."
+curl -fsSL https://openclaw.ai/install.sh | bash
+
 # 3. Install Claude Code
 echo "Installing Claude Code..."
-npm install -g @anthropic-ai/claude-code
+npm install -g @anthropic-ai/claude-code 2>/dev/null || {
+  # If npm isn't on PATH yet (OpenClaw installer may have installed Node elsewhere),
+  # try common locations
+  export PATH="/usr/local/bin:/usr/bin:$PATH"
+  npm install -g @anthropic-ai/claude-code
+}
 
-# 4. Install OpenClaw
-echo "Installing OpenClaw..."
-npm install -g openclaw
-
-# Verify both are on PATH
-echo "  Claude Code: $(claude --version 2>/dev/null | head -1 || echo 'installed')"
-echo "  OpenClaw:    $(openclaw --version 2>/dev/null | head -1 || echo 'installed')"
-
-# 5. Create the openclaw user (if it doesn't exist)
+# 4. Create the openclaw user (if it doesn't exist)
 if id openclaw &>/dev/null; then
   echo "User 'openclaw' already exists."
 else
