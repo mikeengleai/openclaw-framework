@@ -111,6 +111,7 @@ Claude Code will configure the agent, set up the browsing profile, and wire it t
 - [Companion build guide](guide/companion-guide.md) — 14-section step-by-step from Tailscale to troubleshooting
 - [Linux setup options](guide/linux-setup-options.md) — Hostinger VPS, WSL, or Mac dual-boot
 - [Authenticated browsing](guide/authenticated-browsing.md) — exit nodes, agent-browser profiles, cookie import
+- [First research project](guide/first-research-project.md) — daily web + YouTube monitoring with QMD and a Tailnet dashboard
 
 ## Resources
 
