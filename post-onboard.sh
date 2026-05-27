@@ -59,8 +59,25 @@ fi
 export PATH="$HOME/bin:$PATH"
 echo "  Done."
 
-# 5. Superpowers plugin for Claude Code
-echo "[5/7] Installing Superpowers plugin..."
+# 5. Install GOG CLI
+echo "[5/8] Installing GOG CLI..."
+mkdir -p "$HOME/bin"
+if command -v gog &>/dev/null; then
+  echo "  GOG already installed: $(gog --version 2>/dev/null || echo 'installed')"
+else
+  curl -fsSL https://api.github.com/repos/openclaw/gogcli/releases/latest \
+    | grep browser_download_url \
+    | grep linux_amd64 \
+    | cut -d'"' -f4 \
+    | xargs curl -fL -o /tmp/gogcli.tar.gz
+  tar -xzf /tmp/gogcli.tar.gz -C /tmp/
+  mv /tmp/gog "$HOME/bin/gog" && chmod +x "$HOME/bin/gog"
+  rm -f /tmp/gogcli.tar.gz
+fi
+echo "  Done."
+
+# 6. Superpowers plugin for Claude Code
+echo "[6/8] Installing Superpowers plugin..."
 if command -v claude &>/dev/null; then
   claude plugins add https://github.com/obra/superpowers 2>/dev/null || true
   echo "  Done."
@@ -68,13 +85,13 @@ else
   echo "  Skipped — Claude Code not found."
 fi
 
-# 6. Create workspaces directory
-echo "[6/7] Creating workspaces directory..."
+# 7. Create workspaces directory
+echo "[7/8] Creating workspaces directory..."
 mkdir -p "$HOME/workspaces"
 echo "  Done."
 
-# 7. Verify
-echo "[7/7] Verifying installation..."
+# 8. Verify
+echo "[8/8] Verifying installation..."
 echo
 PASS=0
 FAIL=0
@@ -96,6 +113,7 @@ check "tmux"           "command -v tmux"          "tmux -V"
 check "OpenClaw"       "command -v openclaw"      "openclaw --version 2>/dev/null | head -1"
 check "agent-browser"  "command -v agent-browser" "agent-browser --version"
 check "Claude Code"    "command -v claude"        "claude --version 2>/dev/null | head -1"
+check "GOG CLI"        "command -v gog"           "gog --version 2>/dev/null | head -1"
 
 echo
 echo "  $PASS passed, $FAIL failed"
