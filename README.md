@@ -31,7 +31,16 @@ claude --dangerously-skip-permissions
 
 Once Claude Code starts, type `/login` and follow the browser link to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
 
-### Phase 3: Install and onboard OpenClaw
+### Phase 3: Connect to Tailscale
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+Follow the link it prints to authorize your server. This connects it to your Tailscale network so you can reach dashboards and services from your other devices later.
+
+### Phase 4: Install and onboard OpenClaw
 
 OpenClaw uses Claude's OAuth credentials, so Claude Code must be authenticated first.
 
@@ -51,18 +60,16 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 
 **Alternative channels:** When onboard asks about channels, you can choose `slack` or `telegram` instead of WhatsApp.
 
-### Phase 4: Install tools and dependencies
+### Phase 5: Install tools and dependencies
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash
 source ~/.bashrc
 ```
 
-This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, Tailscale, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
+This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
 
-If Tailscale needs authentication, run `sudo tailscale up` after the script finishes.
-
-### Phase 5: Start the gateway and build
+### Phase 6: Start the gateway and build
 
 ```bash
 # Start the OpenClaw gateway
@@ -93,11 +100,13 @@ See the full [authenticated browsing guide](guide/authenticated-browsing.md) for
 
 ### Create your first agent
 
-Inside a `cw` workspace, tell Claude Code what you want:
+Inside a `cw` workspace, tell Claude Code what you want. Here's an example prompt to get started:
 
-> Create a web research agent that can browse the web and search YouTube. It should be able to answer questions by searching the internet and summarizing what it finds.
+> Create a web research agent that can browse the web and search YouTube. It should be able to answer questions by searching the internet and summarizing the results.
+>
+> It should search YouTube and Brave web search for the latest daily updates about Hermes, OpenClaw, and other "harness" tools and keep track of the latest trends. Then, publish it to a local tailnet server, running persistently on reboot, so I can view the results daily. If I have any control channels set up like whatsapp or telegram, send me a notice when the new results are ready. Run the search daily at 6am EST.
 
-Claude Code will configure the agent, set up the browsing profile, and wire it to your messaging channel.
+Claude Code will configure the agent, set up the browsing profile, schedule the daily searches, build a dashboard on your Tailnet, and wire notifications to your messaging channel.
 
 ---
 
