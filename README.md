@@ -20,13 +20,12 @@ SSH into your server and run:
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
 ```
 
-This installs Node.js, git, Claude Code, and creates the `openclaw` user.
+This installs Node.js, git, Claude Code, OpenClaw, and creates the `openclaw` user.
 
-### Step 2: Install and onboard OpenClaw (as openclaw)
+### Step 2: Set up and onboard OpenClaw (as openclaw)
 
 ```bash
 su - openclaw
-sudo npm install -g openclaw
 openclaw setup
 openclaw onboard
 ```
