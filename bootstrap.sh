@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bootstrap.sh — Minimum bootstrap to get Claude Code running.
-# Claude Code handles all remaining setup from the README instructions.
+# bootstrap.sh — Minimum bootstrap for a fresh Ubuntu server.
+# Installs Node.js, git, Claude Code, and creates the openclaw user.
 #
 # Run as root on a fresh Ubuntu server:
 #   curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
@@ -16,25 +16,25 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# 1. Install git
+# 1. Install Node.js
+if command -v node &>/dev/null && [[ "$(node -v)" == v2* ]]; then
+  echo "Node.js $(node -v) already installed."
+else
+  echo "Installing Node.js..."
+  apt update -qq
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt install -y -qq nodejs
+fi
+
+# 2. Install git
 if ! command -v git &>/dev/null; then
   echo "Installing git..."
-  apt update -qq
   apt install -y -qq git
 fi
 
-# 2. Install OpenClaw (brings its own Node.js if needed)
-echo "Installing OpenClaw..."
-curl -fsSL https://openclaw.ai/install.sh | bash
-
 # 3. Install Claude Code
 echo "Installing Claude Code..."
-npm install -g @anthropic-ai/claude-code 2>/dev/null || {
-  # If npm isn't on PATH yet (OpenClaw installer may have installed Node elsewhere),
-  # try common locations
-  export PATH="/usr/local/bin:/usr/bin:$PATH"
-  npm install -g @anthropic-ai/claude-code
-}
+npm install -g @anthropic-ai/claude-code
 
 # 4. Create the openclaw user (if it doesn't exist)
 if id openclaw &>/dev/null; then
@@ -57,5 +57,5 @@ echo "  https://github.com/mikeengleai/openclaw-framework#quick-start"
 echo
 echo "  You are done with Phase 1. Continue from Phase 2."
 echo
-echo "  First command: su - openclaw"
+echo "  Next: su - openclaw"
 echo
