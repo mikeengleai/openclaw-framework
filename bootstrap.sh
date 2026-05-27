@@ -36,7 +36,15 @@ fi
 echo "Installing Claude Code..."
 npm install -g @anthropic-ai/claude-code
 
-# 4. Create the openclaw user (if it doesn't exist)
+# 4. Install OpenClaw
+echo "Installing OpenClaw..."
+npm install -g openclaw
+
+# Verify both are on PATH
+echo "  Claude Code: $(claude --version 2>/dev/null | head -1 || echo 'installed')"
+echo "  OpenClaw:    $(openclaw --version 2>/dev/null | head -1 || echo 'installed')"
+
+# 5. Create the openclaw user (if it doesn't exist)
 if id openclaw &>/dev/null; then
   echo "User 'openclaw' already exists."
 else
