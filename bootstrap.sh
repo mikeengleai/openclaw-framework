@@ -51,24 +51,11 @@ fi
 echo
 echo "=== Bootstrap complete ==="
 echo
-echo "Next steps:"
+echo "  Open the setup guide in your browser and follow the steps there:"
 echo
-echo "  1. Switch to the openclaw user:"
-echo "     su - openclaw"
+echo "  https://github.com/mikeengleai/openclaw-framework#quick-start"
 echo
-echo "  2. Install and onboard OpenClaw:"
-echo "     sudo npm install -g openclaw"
-echo "     openclaw setup"
-echo "     openclaw onboard"
+echo "  You are done with Phase 1. Continue from Phase 2."
 echo
-echo "  3. Install tools and dependencies:"
-echo "     curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash"
-echo
-echo "  4. Authenticate Claude Code:"
-echo "     claude --dangerously-skip-permissions"
-echo "     /login"
-echo
-echo "  5. Start the gateway and build:"
-echo "     nohup openclaw gateway --foreground &>/dev/null &"
-echo "     source ~/.bashrc && cw"
+echo "  First command: su - openclaw"
 echo
