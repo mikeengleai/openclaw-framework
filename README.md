@@ -37,9 +37,12 @@ OpenClaw uses Claude's OAuth credentials, so Claude Code must be authenticated f
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash
-source ~/.bashrc
-openclaw setup
-openclaw onboard
+```
+
+Then:
+
+```bash
+source ~/.bashrc && openclaw setup && openclaw onboard
 ```
 
 The `onboard` wizard walks you through everything interactively: API key, WhatsApp pairing (scan the QR code), gateway configuration, and owner setup. Follow the prompts.
