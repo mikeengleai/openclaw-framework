@@ -12,7 +12,7 @@ This repo contains the scripts, skills, configuration examples, and documentatio
 2. A **Claude** account ($20/mo Max plan) — [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
 3. A **Linux server** — Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
 
-### Step 1: Bootstrap (as root)
+### Phase 1: Bootstrap (as root)
 
 SSH into your server and run:
 
@@ -20,12 +20,24 @@ SSH into your server and run:
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
 ```
 
-This installs Node.js, git, Claude Code, OpenClaw, and creates the `openclaw` user.
+This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 
-### Step 2: Set up and onboard OpenClaw (as openclaw)
+### Phase 2: Authenticate Claude Code (as openclaw)
 
 ```bash
 su - openclaw
+claude --dangerously-skip-permissions
+```
+
+Once Claude Code starts, type `/login` and follow the browser link to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
+
+### Phase 3: Install and onboard OpenClaw
+
+OpenClaw uses Claude's OAuth credentials, so Claude Code must be authenticated first.
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash
+source ~/.bashrc
 openclaw setup
 openclaw onboard
 ```
@@ -36,32 +48,24 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 
 **Alternative channels:** When onboard asks about channels, you can choose `slack` or `telegram` instead of WhatsApp.
 
-### Step 3: Install tools and dependencies
+### Phase 4: Install tools and dependencies
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash
+source ~/.bashrc
 ```
 
 This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, Tailscale, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
 
 If Tailscale needs authentication, run `sudo tailscale up` after the script finishes.
 
-### Step 4: Authenticate Claude Code
-
-```bash
-claude --dangerously-skip-permissions
-```
-
-Once Claude Code starts, type `/login` and follow the browser link to authenticate with your Anthropic account. Then exit Claude Code.
-
-### Step 5: Start the gateway and build
+### Phase 5: Start the gateway and build
 
 ```bash
 # Start the OpenClaw gateway
 nohup openclaw gateway --foreground &>/dev/null &
 
-# Reload PATH and launch your first workspace
-source ~/.bashrc
+# Launch your first workspace
 cw
 ```
 
