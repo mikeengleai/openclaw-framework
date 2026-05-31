@@ -12,9 +12,9 @@ This repo contains the scripts, skills, configuration examples, and documentatio
 
 ### Prerequisites (do these first)
 
-1. A **Tailscale** account (free) — [tailscale.com](https://tailscale.com)
-2. A **Claude** account ($20/mo Max plan) — [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-3. A **Linux server** — Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
+1. A **Tailscale** account (free) - [tailscale.com](https://tailscale.com)
+2. A **Claude** account ($20/mo Max plan) - [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+3. A **Linux server** - Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
 
 ---
 
@@ -167,7 +167,7 @@ On your **home machine** (Windows, Mac, or Linux):
 2. Enable exit node advertising:
    - **Windows/Mac**: Open Tailscale settings, check "Run as exit node"
    - **Linux**: `sudo tailscale up --advertise-exit-node`
-3. Approve the exit node in the Tailscale admin console: [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) — click the machine, enable "Use as exit node"
+3. Approve the exit node in the Tailscale admin console: [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) - click the machine, enable "Use as exit node"
 
 On your **server**, tell it to route traffic through your home machine:
 
@@ -216,19 +216,19 @@ Claude Code will set up QMD (the research database), import your YouTube cookies
 | Directory | What it is |
 |---|---|
 | `bin/` | **Claude Workspaces** (`cw`), **import-cookies**, and memory compaction prompt |
-| `skills/system-map/` | **Daily system map** — Python collector that snapshots your entire system to markdown |
-| `skills/system-upgrade/` | **System upgrade** — 10 checkpointed bash scripts for safe OS and OpenClaw upgrades |
-| `guide/` | **Build guides** — companion guide, linux setup options, authenticated browsing |
-| `server-maps/` | **Example server map** — a real production system map snapshot |
-| `examples/` | **Templates** — sample cron jobs and agent model configurations |
+| `skills/system-map/` | **Daily system map** - Python collector that snapshots your entire system to markdown |
+| `skills/system-upgrade/` | **System upgrade** - 10 checkpointed bash scripts for safe OS and OpenClaw upgrades |
+| `guide/` | **Build guides** - companion guide, linux setup options, authenticated browsing |
+| `server-maps/` | **Example server map** - a real production system map snapshot |
+| `examples/` | **Templates** - sample cron jobs and agent model configurations |
 
 ## Guides
 
-- [Companion build guide](guide/companion-guide.md) — 14-section step-by-step from Tailscale to troubleshooting
-- [Linux setup options](guide/linux-setup-options.md) — Hostinger VPS, WSL, or Mac dual-boot
-- [Authenticated browsing](guide/authenticated-browsing.md) — exit nodes, agent-browser profiles, cookie import
-- [First research project](guide/first-research-project.md) — daily web + YouTube monitoring with QMD and a Tailnet dashboard
-- [Operations guide](guide/operations-guide.md) — using `cw`, `/remote-control`, Superpowers, building agents, research pipelines, and QMD
+- [Companion build guide](guide/companion-guide.md) - 14-section step-by-step from Tailscale to troubleshooting
+- [Linux setup options](guide/linux-setup-options.md) - Hostinger VPS, WSL, or Mac dual-boot
+- [Authenticated browsing](guide/authenticated-browsing.md) - exit nodes, agent-browser profiles, cookie import
+- [First research project](guide/first-research-project.md) - daily web + YouTube monitoring with QMD and a Tailnet dashboard
+- [Operations guide](guide/operations-guide.md) - using `cw`, `/remote-control`, Superpowers, building agents, research pipelines, and QMD
 
 ## Resources
 
