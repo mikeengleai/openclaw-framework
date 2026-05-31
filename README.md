@@ -6,11 +6,19 @@ This repo contains the scripts, skills, configuration examples, and documentatio
 
 ## Quick start
 
+---
+
+> **What you need before starting.** Three accounts and a Linux server. Total monthly cost is about $35, and setup takes under 5 minutes.
+
 ### Prerequisites (do these first)
 
 1. A **Tailscale** account (free) — [tailscale.com](https://tailscale.com)
 2. A **Claude** account ($20/mo Max plan) — [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
 3. A **Linux server** — Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
+
+---
+
+> **Installing the foundation.** This step puts Node.js, git, and Claude Code on a blank server and creates a dedicated `openclaw` user so nothing runs as root. Takes about 2 minutes.
 
 ### Phase 1: Bootstrap (as root)
 
@@ -22,6 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main
 
 This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 
+---
+
+> **Linking your Claude subscription.** Claude Code needs to authenticate before OpenClaw installs, because OpenClaw borrows Claude's OAuth credentials during onboarding.
+
 ### Phase 2: Authenticate Claude Code (as openclaw)
 
 ```bash
@@ -31,6 +43,10 @@ claude --dangerously-skip-permissions
 
 Once Claude Code starts, type `/login` and follow the browser link to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
 
+---
+
+> **Creating your private network.** Tailscale builds an encrypted mesh between your devices. Once your server is on Tailscale, you can reach its dashboards and services from your laptop or phone without exposing anything to the public internet.
+
 ### Phase 3: Connect to Tailscale
 
 ```bash
@@ -39,6 +55,10 @@ sudo tailscale up
 ```
 
 Follow the link it prints to authorize your server. This connects it to your Tailscale network so you can reach dashboards and services from your other devices later.
+
+---
+
+> **Installing the agent framework.** OpenClaw is what manages your agents, channels, memory, and scheduled jobs. The onboard wizard handles configuration interactively so you don't need to memorize commands.
 
 ### Phase 4: Install and onboard OpenClaw
 
@@ -60,6 +80,10 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 
 **Alternative channels:** When onboard asks about channels, you can choose `slack` or `telegram` instead of WhatsApp.
 
+---
+
+> **Adding the tools that make it usable.** QMD for databases, agent-browser for web access, tmux for persistent sessions, and the Claude Workspaces (`cw`) manager that ties it all together.
+
 ### Phase 5: Install tools and dependencies
 
 ```bash
@@ -68,6 +92,10 @@ source ~/.bashrc
 ```
 
 This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
+
+---
+
+> **Going live.** Start the gateway, open your first workspace, and start building. From here on, you manage everything through Claude Code.
 
 ### Phase 6: Start the gateway and build
 
@@ -82,6 +110,8 @@ cw
 Select **[n] Create new workspace**, give it a name, and launch it. You're now in an isolated Claude Code session with its own memory. Tell it what you want to build.
 
 ---
+
+> **Your server is running. Now what?** Here are starter projects that show what you can do with a live OpenClaw server. Each one can be built in a single Claude Code session.
 
 ## After setup: things you can build
 
@@ -198,6 +228,7 @@ Claude Code will set up QMD (the research database), import your YouTube cookies
 - [Linux setup options](guide/linux-setup-options.md) — Hostinger VPS, WSL, or Mac dual-boot
 - [Authenticated browsing](guide/authenticated-browsing.md) — exit nodes, agent-browser profiles, cookie import
 - [First research project](guide/first-research-project.md) — daily web + YouTube monitoring with QMD and a Tailnet dashboard
+- [Operations guide](guide/operations-guide.md) — using `cw`, `/remote-control`, Superpowers, building agents, research pipelines, and QMD
 
 ## Resources
 
