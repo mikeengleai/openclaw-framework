@@ -1,20 +1,20 @@
 # OpenClaw Framework
 
-Everything you need to stand up and operate a self-hosted AI agent server built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Everything you need to stand up and operate a self-hosted AI agent server built on OpenClaw and managed with Claude Code
 
-This repo contains the scripts, skills, configuration examples, and documentation used to run a production [OpenClaw](https://openclaw.ai) deployment. Use it as a starting kit for your own build, or fork it and make it yours.
+This repo contains the scripts, skills, configuration examples, and documentation for running a production [OpenClaw](https://openclaw.ai) deployment. Use it as a starting kit for your own build, or fork it and make it yours.
 
 ## Quick start
 
 ---
 
-> **What you need before starting.** Three accounts and a Linux server. Total monthly cost is about $35, and setup takes under 5 minutes.
+> **What you need before starting.** Three accounts and a Linux server. Total monthly cost is about $35, and "pre-setup" takes 5-10 minutes.
 
 ### Prerequisites (do these first)
 
 1. A **Tailscale** account (free) - [tailscale.com](https://tailscale.com)
-2. A **Claude** account ($20/mo Max plan) - [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-3. A **Linux server** - Hostinger VPS recommended ($14.99/mo), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
+2. A **Claude** account ($20/mo Max plan) - [claude.ai](https://claude.ai) + an API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) - the API key can be done later.
+3. A **Linux server** - Hostinger VPS recommended ($14.99/mo with no annual commitment), Ubuntu 24.04. [Other options](guide/linux-setup-options.md)
 
 ---
 
@@ -24,9 +24,7 @@ This repo contains the scripts, skills, configuration examples, and documentatio
 
 SSH into your server and run:
 
-```bash
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/bootstrap.sh | bash
-```
 
 This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 
@@ -35,24 +33,18 @@ This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 > **Linking your Claude subscription.** Claude Code needs to authenticate before OpenClaw installs, because OpenClaw borrows Claude's OAuth credentials during onboarding.
 
 ### Phase 2: Authenticate Claude Code (as openclaw)
-
-```bash
 su - openclaw
 claude --dangerously-skip-permissions
-```
 
-Once Claude Code starts, type `/login` and follow the browser link to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
+Once Claude Code starts, type `/login` and follow the link in your browser to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
 
 ---
 
 > **Creating your private network.** Tailscale builds an encrypted mesh between your devices. Once your server is on Tailscale, you can reach its dashboards and services from your laptop or phone without exposing anything to the public internet.
 
 ### Phase 3: Connect to Tailscale
-
-```bash
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
-```
 
 Follow the link it prints to authorize your server. This connects it to your Tailscale network so you can reach dashboards and services from your other devices later.
 
@@ -63,16 +55,10 @@ Follow the link it prints to authorize your server. This connects it to your Tai
 ### Phase 4: Install and onboard OpenClaw
 
 OpenClaw uses Claude's OAuth credentials, so Claude Code must be authenticated first.
-
-```bash
 curl -fsSL https://openclaw.ai/install.sh | bash
-```
 
 Then:
-
-```bash
 source ~/.bashrc && openclaw setup && openclaw onboard
-```
 
 The `onboard` wizard walks you through everything interactively: API key, WhatsApp pairing (scan the QR code), gateway configuration, and owner setup. Follow the prompts.
 
@@ -85,11 +71,8 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 > **Adding the tools that make it usable.** QMD for databases, agent-browser for web access, tmux for persistent sessions, and the Claude Workspaces (`cw`) manager that ties it all together.
 
 ### Phase 5: Install tools and dependencies
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash
 source ~/.bashrc
-```
 
 This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
 
@@ -98,17 +81,19 @@ This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser wi
 > **Going live.** Start the gateway, open your first workspace, and start building. From here on, you manage everything through Claude Code.
 
 ### Phase 6: Start the gateway and build
-
-```bash
 # Start the OpenClaw gateway
 nohup openclaw gateway --foreground &>/dev/null &
 
-# Launch your first workspace
+# Launch your first workspace - This is a simple script that lets you keep your projects running even if your windows close, and keeps everything together in groups so you can pick things up
 cw
-```
 
 Select **[n] Create new workspace**, give it a name, and launch it. You're now in an isolated Claude Code session with its own memory. Tell it what you want to build.
 
+---
+But first, type this command - **This is gold**
+/remote-control
+
+This puts a copy of this session into your Claude Code web/mobile view so you can work on it from anywhere.  No more terminal needed until you want to launch a different one.
 ---
 
 > **Your server is running. Now what?** Here are starter projects that show what you can do with a live OpenClaw server. Each one can be built in a single Claude Code session.
@@ -194,12 +179,12 @@ Open a `cw` workspace and paste a prompt like this (customize the topic and chan
 
 > Follow the first research project guide at https://github.com/mikeengleai/openclaw-framework/blob/main/guide/first-research-project.md
 >
-> My research topic: 1931 Ford roadsters
+> My research topic: AI Security News
 >
 > YouTube channels to monitor:
-> - https://www.youtube.com/@jaylenosgarage
-> - https://www.youtube.com/@ACDesignsGarage
-> - https://www.youtube.com/@LafontaineClassicCars
+> - https://www.youtube.com/@AgenticAI-Foundation
+> - https://www.youtube.com/@IBMTechnology
+> - https://www.youtube.com/@AISecurityPodcast
 
 Or skip the guide and describe what you want directly:
 
