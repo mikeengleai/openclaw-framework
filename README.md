@@ -34,6 +34,7 @@ This installs Node.js, git, Claude Code, and creates the `openclaw` user.
 
 ### Phase 2: Authenticate Claude Code (as openclaw)
 su - openclaw
+
 claude --dangerously-skip-permissions
 
 Once Claude Code starts, type `/login` and follow the link in your browser to authenticate with your Anthropic account. Then type `exit` to leave Claude Code.
@@ -43,7 +44,8 @@ Once Claude Code starts, type `/login` and follow the link in your browser to au
 > **Creating your private network.** Tailscale builds an encrypted mesh between your devices. Once your server is on Tailscale, you can reach its dashboards and services from your laptop or phone without exposing anything to the public internet.
 
 ### Phase 3: Connect to Tailscale
-curl -fsSL https://tailscale.com/install.sh | sh
+curl -fsSL https://tailscale.com/install.sh | bash
+
 sudo tailscale up
 
 Follow the link it prints to authorize your server. This connects it to your Tailscale network so you can reach dashboards and services from your other devices later.
