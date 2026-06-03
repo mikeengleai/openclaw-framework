@@ -44,6 +44,7 @@ Once Claude Code starts, type `/login` and follow the link in your browser to au
 > **Creating your private network.** Tailscale builds an encrypted mesh between your devices. Once your server is on Tailscale, you can reach its dashboards and services from your laptop or phone without exposing anything to the public internet.
 
 ### Phase 3: Connect to Tailscale
+
 curl -fsSL https://tailscale.com/install.sh | bash
 
 sudo tailscale up
@@ -57,6 +58,7 @@ Follow the link it prints to authorize your server. This connects it to your Tai
 ### Phase 4: Install and onboard OpenClaw
 
 OpenClaw uses Claude's OAuth credentials, so Claude Code must be authenticated first.
+
 curl -fsSL https://openclaw.ai/install.sh | bash
 
 Then:
@@ -73,6 +75,7 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 > **Adding the tools that make it usable.** QMD for databases, agent-browser for web access, tmux for persistent sessions, and the Claude Workspaces (`cw`) manager that ties it all together.
 
 ### Phase 5: Install tools and dependencies
+
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash
 source ~/.bashrc
 
@@ -84,9 +87,11 @@ This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser wi
 
 ### Phase 6: Start the gateway and build
 # Start the OpenClaw gateway
+
 nohup openclaw gateway --foreground &>/dev/null &
 
 # Launch your first workspace - This is a simple script that lets you keep your projects running even if your windows close, and keeps everything together in groups so you can pick things up
+
 cw
 
 Select **[n] Create new workspace**, give it a name, and launch it. You're now in an isolated Claude Code session with its own memory. Tell it what you want to build.
@@ -158,9 +163,7 @@ On your **home machine** (Windows, Mac, or Linux):
 
 On your **server**, tell it to route traffic through your home machine:
 
-```bash
 sudo tailscale up --exit-node=<your-home-machine-tailscale-ip>
-```
 
 Now all outbound traffic from your server (including agent-browser) goes through your home network.
 
