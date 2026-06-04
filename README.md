@@ -77,6 +77,7 @@ The `onboard` wizard walks you through everything interactively: API key, WhatsA
 ### Phase 5: Install tools and dependencies
 
 curl -fsSL https://raw.githubusercontent.com/mikeengleai/openclaw-framework/main/post-onboard.sh | bash
+
 source ~/.bashrc
 
 This installs system dependencies (python3, sqlite3, tmux, jq), agent-browser with Chrome, the framework tools (`cw`, `import-cookies`), and the Superpowers plugin for Claude Code. It verifies everything at the end.
@@ -98,6 +99,7 @@ Select **[n] Create new workspace**, give it a name, and launch it. You're now i
 
 ---
 But first, type this command - **This is gold**
+
 /remote-control
 
 This puts a copy of this session into your Claude Code web/mobile view so you can work on it from anywhere.  No more terminal needed until you want to launch a different one.
@@ -116,16 +118,19 @@ Give your agent access to Gmail and Google Calendar so it can read, draft, and m
 #### Set up Google Cloud credentials
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and create a new project (e.g., "OpenClaw Agent")
+
 2. Enable the **Gmail API** and **Google Calendar API**:
    - Navigate to **APIs & Services > Library**
    - Search for "Gmail API", click it, click **Enable**
    - Search for "Google Calendar API", click it, click **Enable**
+   
 3. Create OAuth 2.0 credentials:
    - Go to **APIs & Services > Credentials**
    - Click **Create Credentials > OAuth client ID**
    - Application type: **Desktop app**
    - Name it (e.g., "OpenClaw Agent")
    - Download the JSON file
+   
 4. Configure the OAuth consent screen:
    - Go to **APIs & Services > OAuth consent screen**
    - User type: **External** (or Internal if using Google Workspace)
@@ -156,9 +161,11 @@ An exit node routes your agent's web traffic through a machine you control (typi
 On your **home machine** (Windows, Mac, or Linux):
 
 1. Install Tailscale if you haven't already: [tailscale.com/download](https://tailscale.com/download)
+
 2. Enable exit node advertising:
    - **Windows/Mac**: Open Tailscale settings, check "Run as exit node"
    - **Linux**: `sudo tailscale up --advertise-exit-node`
+   
 3. Approve the exit node in the Tailscale admin console: [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) - click the machine, enable "Use as exit node"
 
 On your **server**, tell it to route traffic through your home machine:
