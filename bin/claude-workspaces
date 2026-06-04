@@ -590,6 +590,24 @@ def cmd_handoff(name, mode, source=None):
         print(f"  {RED}Unknown handoff mode: {mode}{RESET}")
 
 
+def shelve_workspace(name):
+    """Shelve (archive) a workspace so it no longer appears in the menu.
+
+    Stops the tmux session if running, then archives.  Lighter than rotate —
+    no compaction, no handoff, just hide it for later restore.
+    """
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return
+    # Stop tmux session if running
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        print(f"  {YELLOW}Stopped running session '{name}'{RESET}")
+    archive_workspace(name)
+
+
 def archive_workspace(name):
     """Move the workspace dir AND its Claude project dir into ~/workspaces/.archive/<name>-<ts>/.
 
@@ -904,7 +922,8 @@ def show_menu(use_tmux=False, bg=False):
         print(f"  {CYAN}[n]{RESET}  Create new workspace")
         print(f"  {CYAN}[s]{RESET}  Stop a running workspace")
         print(f"  {CYAN}[r]{RESET}  Rotate a workspace (compact + handoff + archive + fresh)")
-        print(f"  {CYAN}[a]{RESET}  Show archived workspaces")
+        print(f"  {CYAN}[h]{RESET}  Shelve (hide) a workspace")
+        print(f"  {CYAN}[a]{RESET}  Show/restore archived workspaces")
         print(f"  {CYAN}[d]{RESET}  Delete a workspace")
         print(f"  {CYAN}[b]{RESET}  Toggle background/agent-view mode (currently: {'ON' if bg else 'off'})")
         print(f"  {CYAN}[t]{RESET}  Toggle tmux mode (currently: {mode})")
@@ -929,8 +948,33 @@ def show_menu(use_tmux=False, bg=False):
                 active = get_active_tmux_sessions()
             else:
                 print(f"  {RED}Unknown workspace '{pick}'{RESET}")
+        elif choice == "h":
+            pick = input("  Workspace name or number to shelve: ").strip()
+            target = None
+            try:
+                idx = int(pick) - 1
+                if 0 <= idx < len(workspaces):
+                    target = workspaces[idx]["name"]
+            except ValueError:
+                if any(w["name"] == pick for w in workspaces):
+                    target = pick
+            if target:
+                confirm = input(f"  Shelve '{target}'? It will be hidden from the menu but can be restored. [y/N]: ").strip().lower()
+                if confirm == "y":
+                    shelve_workspace(target)
+                    workspaces = get_workspaces()
+                    active = get_active_tmux_sessions()
+                else:
+                    print(f"  {DIM}Cancelled.{RESET}")
+            else:
+                print(f"  {RED}Unknown workspace '{pick}'{RESET}")
         elif choice == "a":
             archive_list_cmd()
+            restore = input(f"  {CYAN}Restore an archive? Enter id (or Enter to skip): {RESET}").strip()
+            if restore:
+                archive_restore(restore)
+                workspaces = get_workspaces()
+                active = get_active_tmux_sessions()
         elif choice == "d":
             name = input("  Workspace name or number to delete: ").strip()
             try:
@@ -1005,6 +1049,8 @@ def print_usage():
     cw rename OLD NEW                  Rename a workspace (dir, project, sessions)
     cw stop NAME                      Stop a running tmux workspace
     cw delete NAME                    Delete a workspace + its Claude project dir (confirms)
+    cw shelve NAME                    Shelve (hide) a workspace — stops session, moves to archive
+                                      Equivalent to: cw archive NAME
 
   {BOLD}Memory compaction:{RESET}
     cw compact NAME                   Curate memory/ → memory.staged/ (dry-run; review first)
@@ -1016,17 +1062,18 @@ def print_usage():
     cw handoff NAME --adopt FILE      Promote an existing markdown to ~/workspaces/NAME/HANDOFF.md
     cw handoff NAME --from-jsonl      Generate HANDOFF.md by replaying the last session via `claude -p --resume`
     cw rotate NAME                    Compact + handoff + archive old session + launch fresh (same name)
+    cw archive NAME                   Shelve (hide) a workspace — same as `cw shelve NAME`
     cw archive list                   Show archived workspaces (~/workspaces/.archive/)
     cw archive restore <id>           Restore an archived workspace by id (e.g. pm-20260426-2134)
     cw purge [--older-than Nd]        Permanently delete archives (asks for confirmation; default: all)
     cw purge --dry-run                Preview what purge would delete
 
   {BOLD}Interactive menu keys:{RESET}
-    [#]  Launch/attach workspace by number      [r]  Rotate a workspace
-    [n]  Create new workspace                    [a]  Show archived workspaces
-    [s]  Stop a running workspace                [d]  Delete a workspace
-    [b]  Toggle background/agent-view mode       [t]  Toggle tmux mode
-    [q]  Quit
+    [#]  Launch/attach workspace by number      [h]  Shelve (hide) a workspace
+    [n]  Create new workspace                    [a]  Show/restore archived workspaces
+    [s]  Stop a running workspace                [r]  Rotate a workspace
+    [d]  Delete a workspace                      [b]  Toggle background/agent-view mode
+    [t]  Toggle tmux mode                        [q]  Quit
 
   {BOLD}Launch modes:{RESET}
     Default is tmux. Pass a flag before any subcommand to change:
@@ -1161,14 +1208,19 @@ def main():
             print(f"  {RED}handoff requires --adopt FILE or --from-jsonl{RESET}")
     elif args[0] == "rotate" and len(args) >= 2:
         rotate_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
+    elif args[0] == "shelve" and len(args) >= 2:
+        shelve_workspace(args[1])
     elif args[0] == "archive":
         sub = args[1] if len(args) >= 2 else "list"
         if sub == "list":
             archive_list_cmd()
         elif sub == "restore" and len(args) >= 3:
             archive_restore(args[2])
+        elif (WORKSPACES_DIR / sub).exists():
+            # `cw archive <name>` — shelve a workspace directly
+            shelve_workspace(sub)
         else:
-            print(f"  {RED}Usage: archive list  |  archive restore <id>{RESET}")
+            print(f"  {RED}Usage: archive list  |  archive restore <id>  |  archive <name>{RESET}")
     elif args[0] == "purge":
         rest = args[1:]
         dry = "--dry-run" in rest
