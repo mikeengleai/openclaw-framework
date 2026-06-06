@@ -770,6 +770,89 @@ def purge_archives(older_than_days=None, dry_run=False):
     print(f"  {GREEN}Deleted {len(candidates)} archive(s).{RESET}")
 
 
+def refresh_workspace(name, use_tmux=False, bg=False):
+    """Light context reset: compact memory → handoff → delete old session jsonl → fresh launch.
+
+    Unlike rotate, this keeps all workspace files (dashboards, scripts, data) in place.
+    Only the Claude conversation history (jsonl) is removed. Memory is compacted and
+    carried forward. A HANDOFF.md bridges the old session to the new one.
+    """
+    workspace_dir = WORKSPACES_DIR / name
+    if not workspace_dir.exists():
+        print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
+        return
+
+    memory_dir = workspace_memory_dir(name)
+    project_dir = workspace_project_dir(name)
+    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if project_dir.exists() else []
+    jsonl_size_kb = sum(j.stat().st_size for j in jsonls) // 1024
+    mem_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
+    have_handoff = (workspace_dir / "HANDOFF.md").exists()
+
+    print(f"\n  {BOLD}Refresh plan for '{name}':{RESET}")
+    print(f"    Session files:        {len(jsonls)} jsonl ({jsonl_size_kb} KB total)")
+    print(f"    Memory entries:       {mem_count}")
+    print(f"    HANDOFF.md:           {'present (will keep)' if have_handoff else 'missing — will generate from jsonl'}")
+    print(f"    Compaction:           {'will run' if mem_count > 0 else 'skip (no memory yet)'}")
+    print(f"    Workspace files:      {BOLD}UNCHANGED{RESET} (dashboards, scripts, data stay)")
+    print(f"    Session jsonl files:  will be deleted (conversation history reset)")
+    print()
+    confirm = input(f"  Proceed? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{RESET}")
+        return
+
+    # 1. Stop tmux session if running.
+    tmux_name = TMUX_PREFIX + name
+    if tmux_session_exists(tmux_name):
+        print(f"  {YELLOW}Stopping running tmux session…{RESET}")
+        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+
+    # 2. Compact memory (if any).
+    if mem_count > 0:
+        print(f"\n  {BOLD}Step 1/3: Compacting memory…{RESET}")
+        compact_plan(name)
+        staged = project_dir / "memory.staged"
+        if staged.exists():
+            compact_apply(name)
+        else:
+            print(f"  {YELLOW}Compaction produced no staging dir — keeping memory as-is.{RESET}")
+
+    # 3. Generate HANDOFF.md if missing.
+    print(f"\n  {BOLD}Step 2/3: HANDOFF.md…{RESET}")
+    if not have_handoff:
+        if jsonls:
+            handoff_from_jsonl(name)
+        else:
+            print(f"  {YELLOW}No jsonl + no HANDOFF.md — proceeding without a seed file.{RESET}")
+    else:
+        print(f"  {DIM}Using existing HANDOFF.md.{RESET}")
+
+    # 4. Delete session jsonl files (the conversation bloat).
+    print(f"\n  {BOLD}Step 3/3: Clearing session history…{RESET}")
+    for j in jsonls:
+        j.unlink()
+        print(f"  {DIM}Removed {j.name}{RESET}")
+
+    # Clear session metadata so next launch starts fresh.
+    sessions = load_sessions()
+    if name in sessions:
+        del sessions[name]
+        save_sessions(sessions)
+
+    print(f"\n  {GREEN}Refresh complete.{RESET}")
+    print(f"  {DIM}Workspace files: untouched{RESET}")
+    print(f"  {DIM}Memory: compacted and carried forward{RESET}")
+    print(f"  {DIM}Session history: cleared{RESET}")
+
+    # 5. Offer to launch fresh.
+    launch_now = input(f"\n  Launch '{name}' now in fresh mode? [Y/n]: ").strip().lower()
+    if launch_now != "n":
+        seed = workspace_dir / "HANDOFF.md"
+        launch_workspace(name, use_tmux=use_tmux, fresh=True,
+                         seed_file=seed if seed.exists() else None, bg=bg)
+
+
 def rotate_workspace(name, use_tmux=False, bg=False):
     """Headline rotation: compact → handoff → archive → re-create → fresh launch.
 
@@ -921,6 +1004,7 @@ def show_menu(use_tmux=False, bg=False):
         print(f"  {CYAN}[#]{RESET}  Launch/attach workspace by number")
         print(f"  {CYAN}[n]{RESET}  Create new workspace")
         print(f"  {CYAN}[s]{RESET}  Stop a running workspace")
+        print(f"  {CYAN}[f]{RESET}  Refresh a workspace (compact + handoff + clear session — keeps files)")
         print(f"  {CYAN}[r]{RESET}  Rotate a workspace (compact + handoff + archive + fresh)")
         print(f"  {CYAN}[h]{RESET}  Shelve (hide) a workspace")
         print(f"  {CYAN}[a]{RESET}  Show/restore archived workspaces")
@@ -932,6 +1016,22 @@ def show_menu(use_tmux=False, bg=False):
 
         if choice == "q":
             break
+        elif choice == "f":
+            pick = input("  Workspace name or number to refresh: ").strip()
+            target = None
+            try:
+                idx = int(pick) - 1
+                if 0 <= idx < len(workspaces):
+                    target = workspaces[idx]["name"]
+            except ValueError:
+                if any(w["name"] == pick for w in workspaces):
+                    target = pick
+            if target:
+                refresh_workspace(target, use_tmux=use_tmux, bg=bg)
+                workspaces = get_workspaces()
+                active = get_active_tmux_sessions()
+            else:
+                print(f"  {RED}Unknown workspace '{pick}'{RESET}")
         elif choice == "r":
             pick = input("  Workspace name or number to rotate: ").strip()
             target = None
@@ -1058,7 +1158,10 @@ def print_usage():
     cw compact NAME --discard         Throw away the staged version
     cw compact NAME --undo            Restore memory/ from the most recent backup
 
-  {BOLD}Handoff / Rotation (context-shedding workflow):{RESET}
+  {BOLD}Context shedding:{RESET}
+    cw refresh NAME                   Compact memory + handoff + clear session history (keeps all files)
+
+  {BOLD}Handoff / Rotation (heavy — archives workspace dir):{RESET}
     cw handoff NAME --adopt FILE      Promote an existing markdown to ~/workspaces/NAME/HANDOFF.md
     cw handoff NAME --from-jsonl      Generate HANDOFF.md by replaying the last session via `claude -p --resume`
     cw rotate NAME                    Compact + handoff + archive old session + launch fresh (same name)
@@ -1069,11 +1172,12 @@ def print_usage():
     cw purge --dry-run                Preview what purge would delete
 
   {BOLD}Interactive menu keys:{RESET}
-    [#]  Launch/attach workspace by number      [h]  Shelve (hide) a workspace
-    [n]  Create new workspace                    [a]  Show/restore archived workspaces
-    [s]  Stop a running workspace                [r]  Rotate a workspace
-    [d]  Delete a workspace                      [b]  Toggle background/agent-view mode
-    [t]  Toggle tmux mode                        [q]  Quit
+    [#]  Launch/attach workspace by number      [f]  Refresh (light context reset)
+    [n]  Create new workspace                    [h]  Shelve (hide) a workspace
+    [s]  Stop a running workspace                [r]  Rotate (heavy — archives workspace)
+    [a]  Show/restore archived workspaces        [d]  Delete a workspace
+    [b]  Toggle background/agent-view mode       [t]  Toggle tmux mode
+    [q]  Quit
 
   {BOLD}Launch modes:{RESET}
     Default is tmux. Pass a flag before any subcommand to change:
@@ -1206,6 +1310,8 @@ def main():
             cmd_handoff(name, "adopt", source=src)
         else:
             print(f"  {RED}handoff requires --adopt FILE or --from-jsonl{RESET}")
+    elif args[0] == "refresh" and len(args) >= 2:
+        refresh_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
     elif args[0] == "rotate" and len(args) >= 2:
         rotate_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
     elif args[0] == "shelve" and len(args) >= 2:
