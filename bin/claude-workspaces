@@ -514,17 +514,30 @@ def lineage_path(name):
 def append_lineage(name, archived_as, before_count, after_count, had_handoff):
     """Append a row to the new workspace's LINEAGE.md (creating it if needed)."""
     lp = lineage_path(name)
+    _ensure_lineage_header(lp, name)
     ts = time.strftime("%Y-%m-%d %H:%M")
+    with lp.open("a") as f:
+        f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+
+
+def append_lineage_refresh(name, before_count, after_count, had_handoff, jsonls_removed):
+    """Append a refresh row to LINEAGE.md (lighter than rotate — no archive created)."""
+    lp = lineage_path(name)
+    _ensure_lineage_header(lp, name)
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    with lp.open("a") as f:
+        f.write(f"| {ts} | refresh (no archive) | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+
+
+def _ensure_lineage_header(lp, name):
+    """Create LINEAGE.md with header if it doesn't exist."""
     if not lp.exists():
         lp.write_text(
             f"# {name} — workspace lineage\n\n"
-            f"Each row records a rotation: the prior incarnation of this workspace was archived "
-            f"and replaced with a fresh session.\n\n"
-            f"| Rotated | Archived as | Memory before | Memory after | Handoff |\n"
+            f"Each row records a context reset: the session was refreshed or rotated.\n\n"
+            f"| Reset | Archived as | Memory before | Memory after | Handoff |\n"
             f"|---|---|---|---|---|\n"
         )
-    with lp.open("a") as f:
-        f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
 
 
 def handoff_adopt(name, source_file):
@@ -839,6 +852,12 @@ def refresh_workspace(name, use_tmux=False, bg=False):
     if name in sessions:
         del sessions[name]
         save_sessions(sessions)
+
+    # Record in LINEAGE.md.
+    after_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
+    append_lineage_refresh(name, mem_count, after_count,
+                           have_handoff or (workspace_dir / "HANDOFF.md").exists(),
+                           len(jsonls))
 
     print(f"\n  {GREEN}Refresh complete.{RESET}")
     print(f"  {DIM}Workspace files: untouched{RESET}")
