@@ -33,8 +33,11 @@ def save_sessions(sessions):
 
 
 def tmux_session_exists(name):
+    # Prefix the target with '=' to force an EXACT match. Without it, tmux does
+    # prefix matching, so has-session -t cw-1k-pm succeeds when only cw-1k-pm-expand
+    # exists (cw-1k-pm is a prefix of it) — the wrong session.
     return subprocess.run(
-        ["tmux", "has-session", "-t", name], capture_output=True
+        ["tmux", "has-session", "-t", "=" + name], capture_output=True
     ).returncode == 0
 
 
@@ -70,10 +73,11 @@ def get_active_tmux_sessions():
 
 def attach(tmux_name):
     """Attach or switch to a tmux session."""
+    # '=' forces an exact target match (tmux prefix-matches bare names otherwise).
     if os.environ.get("TMUX"):
-        os.execvp("tmux", ["tmux", "switch-client", "-t", tmux_name])
+        os.execvp("tmux", ["tmux", "switch-client", "-t", "=" + tmux_name])
     else:
-        os.execvp("tmux", ["tmux", "attach-session", "-t", tmux_name])
+        os.execvp("tmux", ["tmux", "attach-session", "-t", "=" + tmux_name])
 
 
 def launch_workspace(name, resume_session_id=None, use_tmux=False, fresh=False, seed_file=None, bg=False):
@@ -231,7 +235,7 @@ def rename_workspace(old_name, new_name):
     was_running = tmux_session_exists(old_tmux)
     if was_running:
         print(f"  {YELLOW}Stopping running session '{old_name}' for rename…{RESET}")
-        subprocess.run(["tmux", "kill-session", "-t", old_tmux], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + old_tmux], capture_output=True)
 
     # 2. Rename workspace directory.
     old_dir.rename(new_dir)
@@ -274,7 +278,7 @@ def stop_workspace(name):
     """Stop a running workspace tmux session."""
     tmux_name = TMUX_PREFIX + name
     if tmux_session_exists(tmux_name):
-        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
         print(f"  {YELLOW}Stopped session '{name}'{RESET}")
     else:
         print(f"  {DIM}Session '{name}' not running{RESET}")
@@ -297,7 +301,7 @@ def delete_workspace(name):
     # Stop tmux session if running
     tmux_name = TMUX_PREFIX + name
     if tmux_session_exists(tmux_name):
-        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
         print(f"  {YELLOW}Stopped running session '{name}'{RESET}")
 
     # Remove workspace directory
@@ -616,7 +620,7 @@ def shelve_workspace(name):
     # Stop tmux session if running
     tmux_name = TMUX_PREFIX + name
     if tmux_session_exists(tmux_name):
-        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
         print(f"  {YELLOW}Stopped running session '{name}'{RESET}")
     archive_workspace(name)
 
@@ -819,7 +823,7 @@ def refresh_workspace(name, use_tmux=False, bg=False):
     tmux_name = TMUX_PREFIX + name
     if tmux_session_exists(tmux_name):
         print(f"  {YELLOW}Stopping running tmux session…{RESET}")
-        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
 
     # 2. Compact memory (if any).
     if mem_count > 0:
@@ -910,7 +914,7 @@ def rotate_workspace(name, use_tmux=False, bg=False):
     tmux_name = TMUX_PREFIX + name
     if tmux_session_exists(tmux_name):
         print(f"  {YELLOW}Stopping running tmux session…{RESET}")
-        subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
 
     # 3. Compact (auto-apply for atomic rotation flow).
     before_count = mem_count
