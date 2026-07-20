@@ -524,13 +524,17 @@ def append_lineage(name, archived_as, before_count, after_count, had_handoff):
         f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
 
 
-def append_lineage_refresh(name, before_count, after_count, had_handoff, jsonls_removed):
-    """Append a refresh row to LINEAGE.md (lighter than rotate — no archive created)."""
+def append_lineage_refresh(name, before_count, after_count, had_handoff, label="reset"):
+    """Append a light-reset row to LINEAGE.md (no full-workspace archive).
+
+    `label` records what happened to the session history (e.g. the session-archive
+    dir name, or 'purge (deleted)').
+    """
     lp = lineage_path(name)
     _ensure_lineage_header(lp, name)
     ts = time.strftime("%Y-%m-%d %H:%M")
     with lp.open("a") as f:
-        f.write(f"| {ts} | refresh (no archive) | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+        f.write(f"| {ts} | {label} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
 
 
 def _ensure_lineage_header(lp, name):
@@ -668,6 +672,41 @@ def archive_workspace(name):
     return archive_root
 
 
+def archive_session_jsonls(name, jsonls):
+    """Archive only the session jsonl files (light reset) into
+    ~/workspaces/.archive/<name>-<ts>-session/, preserving conversation history
+    without disturbing the live workspace or its working files.
+
+    Returns the archive path, or None if there was nothing to archive.
+    """
+    if not jsonls:
+        return None
+    ensure_archive_dir()
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    dest = ARCHIVE_DIR / f"{name}-{ts}-session"
+    if dest.exists():
+        # extreme edge: same-second collision; suffix with milliseconds
+        dest = ARCHIVE_DIR / f"{name}-{ts}-{int(time.time()*1000) % 1000}-session"
+    dest.mkdir(parents=True)
+
+    import shutil
+    moved = 0
+    for j in jsonls:
+        shutil.move(str(j), str(dest / j.name))
+        moved += 1
+
+    meta = {
+        "name": name,
+        "archived_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": "session-only",
+        "jsonl_count": moved,
+        "project_dir": str(workspace_project_dir(name)),
+        "workspace_dir": str(WORKSPACES_DIR / name),
+    }
+    (dest / "rotation-meta.json").write_text(json.dumps(meta, indent=2))
+    return dest
+
+
 def archive_list_cmd():
     """List archived workspaces. Tombstoned (.restored-*) entries are hidden."""
     if not ARCHIVE_DIR.exists():
@@ -687,14 +726,17 @@ def archive_list_cmd():
             continue
         meta_path = e / "rotation-meta.json"
         when = ""
+        kind = ""
         if meta_path.exists():
             try:
                 m = json.loads(meta_path.read_text())
                 when = m.get("archived_at", "")
+                kind = m.get("kind", "")
             except Exception:
                 pass
         size_kb = sum(f.stat().st_size for f in e.rglob("*") if f.is_file()) // 1024
-        print(f"  {e.name:<40} {when:<20} {size_kb} KB")
+        tag = f"  {DIM}(session-only){RESET}" if kind == "session-only" else ""
+        print(f"  {e.name:<40} {when:<20} {size_kb} KB{tag}")
     print()
 
 
@@ -714,6 +756,26 @@ def archive_restore(archived_name):
         return
     meta = json.loads(meta_path.read_text())
     name = meta["name"]
+
+    # Session-only archives (from a light reset) hold just conversation jsonls.
+    # Restore them back into the project dir; the live workspace stays untouched,
+    # so we do NOT refuse when a workspace with the same name already exists.
+    if meta.get("kind") == "session-only":
+        project_dst = Path(meta["project_dir"])
+        confirm = input(f"  Restore session history '{archived_name}' → {project_dst}? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print(f"  {DIM}Cancelled.{RESET}")
+            return
+        import shutil
+        project_dst.mkdir(parents=True, exist_ok=True)
+        restored = 0
+        for j in src.glob("*.jsonl"):
+            shutil.move(str(j), str(project_dst / j.name))
+            restored += 1
+        src.rename(src.parent / f".restored-{src.name}")
+        print(f"  {GREEN}Restored {restored} session jsonl → {project_dst}{RESET}")
+        return
+
     workspace_dst = Path(meta["workspace_dir"])
     project_dst = Path(meta["project_dir"])
     if workspace_dst.exists():
@@ -787,13 +849,24 @@ def purge_archives(older_than_days=None, dry_run=False):
     print(f"  {GREEN}Deleted {len(candidates)} archive(s).{RESET}")
 
 
-def refresh_workspace(name, use_tmux=False, bg=False):
-    """Light context reset: compact memory → handoff → delete old session jsonl → fresh launch.
+def reset_workspace(name, mode="light", use_tmux=False, bg=False):
+    """Unified context reset. One command, three modes — the safe default is 'light':
 
-    Unlike rotate, this keeps all workspace files (dashboards, scripts, data) in place.
-    Only the Claude conversation history (jsonl) is removed. Memory is compacted and
-    carried forward. A HANDOFF.md bridges the old session to the new one.
+      light  (default) — compact memory → handoff → ARCHIVE the session jsonl →
+                         keep all workspace files in place → launch fresh.
+                         History is preserved (recoverable) and day-to-day files stay put.
+      full             — compact → handoff → archive the ENTIRE workspace dir →
+                         recreate a clean workspace (CLAUDE.md + memory + handoff) → fresh.
+                         Use when you want a clean slate. Delegates to rotate_workspace().
+      purge            — like light, but DELETES the session jsonl instead of archiving it.
+                         Reclaims disk; history is NOT recoverable.
+
+    light and full both preserve history. Only purge destroys it.
     """
+    if mode == "full":
+        rotate_workspace(name, use_tmux=use_tmux, bg=bg)
+        return
+
     workspace_dir = WORKSPACES_DIR / name
     if not workspace_dir.exists():
         print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
@@ -806,13 +879,19 @@ def refresh_workspace(name, use_tmux=False, bg=False):
     mem_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
     have_handoff = (workspace_dir / "HANDOFF.md").exists()
 
-    print(f"\n  {BOLD}Refresh plan for '{name}':{RESET}")
+    destructive = (mode == "purge")
+    if destructive:
+        hist_line = f"{RED}will be DELETED (not recoverable){RESET}"
+    else:
+        hist_line = f"will be archived → ~/workspaces/.archive/{name}-<ts>-session/ ({GREEN}recoverable{RESET})"
+
+    print(f"\n  {BOLD}Reset plan for '{name}'  [{mode}]:{RESET}")
     print(f"    Session files:        {len(jsonls)} jsonl ({jsonl_size_kb} KB total)")
     print(f"    Memory entries:       {mem_count}")
     print(f"    HANDOFF.md:           {'present (will keep)' if have_handoff else 'missing — will generate from jsonl'}")
     print(f"    Compaction:           {'will run' if mem_count > 0 else 'skip (no memory yet)'}")
     print(f"    Workspace files:      {BOLD}UNCHANGED{RESET} (dashboards, scripts, data stay)")
-    print(f"    Session jsonl files:  will be deleted (conversation history reset)")
+    print(f"    Session history:      {hist_line}")
     print()
     confirm = input(f"  Proceed? [y/N]: ").strip().lower()
     if confirm != "y":
@@ -845,11 +924,23 @@ def refresh_workspace(name, use_tmux=False, bg=False):
     else:
         print(f"  {DIM}Using existing HANDOFF.md.{RESET}")
 
-    # 4. Delete session jsonl files (the conversation bloat).
-    print(f"\n  {BOLD}Step 3/3: Clearing session history…{RESET}")
-    for j in jsonls:
-        j.unlink()
-        print(f"  {DIM}Removed {j.name}{RESET}")
+    # 4. Archive (default) or purge (opt-in) the session jsonl files.
+    if destructive:
+        print(f"\n  {BOLD}Step 3/3: Deleting session history…{RESET}")
+        for j in jsonls:
+            j.unlink()
+            print(f"  {DIM}Removed {j.name}{RESET}")
+        archived_as = "purge (deleted)"
+    else:
+        print(f"\n  {BOLD}Step 3/3: Archiving session history…{RESET}")
+        arch = archive_session_jsonls(name, jsonls)
+        if arch is not None:
+            print(f"  {GREEN}Archived {len(jsonls)} jsonl → {arch.name}{RESET}")
+            print(f"  {DIM}Recover later with: cw archive restore {arch.name}{RESET}")
+            archived_as = arch.name
+        else:
+            print(f"  {DIM}No session jsonl to archive.{RESET}")
+            archived_as = "reset (no session)"
 
     # Clear session metadata so next launch starts fresh.
     sessions = load_sessions()
@@ -861,12 +952,12 @@ def refresh_workspace(name, use_tmux=False, bg=False):
     after_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
     append_lineage_refresh(name, mem_count, after_count,
                            have_handoff or (workspace_dir / "HANDOFF.md").exists(),
-                           len(jsonls))
+                           label=archived_as)
 
-    print(f"\n  {GREEN}Refresh complete.{RESET}")
+    print(f"\n  {GREEN}Reset complete ({mode}).{RESET}")
     print(f"  {DIM}Workspace files: untouched{RESET}")
     print(f"  {DIM}Memory: compacted and carried forward{RESET}")
-    print(f"  {DIM}Session history: cleared{RESET}")
+    print(f"  {DIM}Session history: {'deleted' if destructive else 'archived (recoverable)'}{RESET}")
 
     # 5. Offer to launch fresh.
     launch_now = input(f"\n  Launch '{name}' now in fresh mode? [Y/n]: ").strip().lower()
@@ -1027,8 +1118,7 @@ def show_menu(use_tmux=False, bg=False):
         print(f"  {CYAN}[#]{RESET}  Launch/attach workspace by number")
         print(f"  {CYAN}[n]{RESET}  Create new workspace")
         print(f"  {CYAN}[s]{RESET}  Stop a running workspace")
-        print(f"  {CYAN}[f]{RESET}  Refresh a workspace (compact + handoff + clear session — keeps files)")
-        print(f"  {CYAN}[r]{RESET}  Rotate a workspace (compact + handoff + archive + fresh)")
+        print(f"  {CYAN}[r]{RESET}  Reset a workspace (compact + handoff + archive history + fresh — keeps files)")
         print(f"  {CYAN}[h]{RESET}  Shelve (hide) a workspace")
         print(f"  {CYAN}[a]{RESET}  Show/restore archived workspaces")
         print(f"  {CYAN}[d]{RESET}  Delete a workspace")
@@ -1039,8 +1129,9 @@ def show_menu(use_tmux=False, bg=False):
 
         if choice == "q":
             break
-        elif choice == "f":
-            pick = input("  Workspace name or number to refresh: ").strip()
+        elif choice in ("r", "f"):
+            # 'f' kept as an alias so old muscle memory now lands on the SAFE reset.
+            pick = input("  Workspace name or number to reset: ").strip()
             target = None
             try:
                 idx = int(pick) - 1
@@ -1050,23 +1141,7 @@ def show_menu(use_tmux=False, bg=False):
                 if any(w["name"] == pick for w in workspaces):
                     target = pick
             if target:
-                refresh_workspace(target, use_tmux=use_tmux, bg=bg)
-                workspaces = get_workspaces()
-                active = get_active_tmux_sessions()
-            else:
-                print(f"  {RED}Unknown workspace '{pick}'{RESET}")
-        elif choice == "r":
-            pick = input("  Workspace name or number to rotate: ").strip()
-            target = None
-            try:
-                idx = int(pick) - 1
-                if 0 <= idx < len(workspaces):
-                    target = workspaces[idx]["name"]
-            except ValueError:
-                if any(w["name"] == pick for w in workspaces):
-                    target = pick
-            if target:
-                rotate_workspace(target, use_tmux=use_tmux, bg=bg)
+                reset_workspace(target, mode="light", use_tmux=use_tmux, bg=bg)
                 workspaces = get_workspaces()
                 active = get_active_tmux_sessions()
             else:
@@ -1181,13 +1256,16 @@ def print_usage():
     cw compact NAME --discard         Throw away the staged version
     cw compact NAME --undo            Restore memory/ from the most recent backup
 
-  {BOLD}Context shedding:{RESET}
-    cw refresh NAME                   Compact memory + handoff + clear session history (keeps all files)
+  {BOLD}Context reset (one command, safe by default):{RESET}
+    cw reset NAME                     Compact + handoff + ARCHIVE history + fresh (keeps all files) — recoverable
+    cw reset NAME --full              Clean slate: archive the ENTIRE workspace dir, recreate fresh
+    cw reset NAME --purge             Like default, but DELETE history instead of archiving (reclaim disk)
+    cw refresh NAME                   Alias for `cw reset NAME` (now archives history, no longer deletes)
+    cw rotate NAME                    Alias for `cw reset NAME --full`
 
-  {BOLD}Handoff / Rotation (heavy — archives workspace dir):{RESET}
+  {BOLD}Handoff / Archive:{RESET}
     cw handoff NAME --adopt FILE      Promote an existing markdown to ~/workspaces/NAME/HANDOFF.md
     cw handoff NAME --from-jsonl      Generate HANDOFF.md by replaying the last session via `claude -p --resume`
-    cw rotate NAME                    Compact + handoff + archive old session + launch fresh (same name)
     cw archive NAME                   Shelve (hide) a workspace — same as `cw shelve NAME`
     cw archive list                   Show archived workspaces (~/workspaces/.archive/)
     cw archive restore <id>           Restore an archived workspace by id (e.g. pm-20260426-2134)
@@ -1195,12 +1273,11 @@ def print_usage():
     cw purge --dry-run                Preview what purge would delete
 
   {BOLD}Interactive menu keys:{RESET}
-    [#]  Launch/attach workspace by number      [f]  Refresh (light context reset)
+    [#]  Launch/attach workspace by number      [r]  Reset (keeps files, archives history)
     [n]  Create new workspace                    [h]  Shelve (hide) a workspace
-    [s]  Stop a running workspace                [r]  Rotate (heavy — archives workspace)
-    [a]  Show/restore archived workspaces        [d]  Delete a workspace
-    [b]  Toggle background/agent-view mode       [t]  Toggle tmux mode
-    [q]  Quit
+    [s]  Stop a running workspace                [a]  Show/restore archived workspaces
+    [d]  Delete a workspace                       [b]  Toggle background/agent-view mode
+    [t]  Toggle tmux mode                         [q]  Quit
 
   {BOLD}Launch modes:{RESET}
     Default is tmux. Pass a flag before any subcommand to change:
@@ -1216,13 +1293,13 @@ def print_usage():
     ~/.claude/projects/<encoded>/     Per-workspace Claude project (memory/, *.jsonl)
     ~/bin/compaction-prompt.md        Curator prompt template (edit to customize compaction)
 
-  {BOLD}Typical rotation flow:{RESET}
+  {BOLD}Typical reset flow:{RESET}
     1. Working in a long session, getting context warnings.
     2. (Optional) Use the brainstorming skill to write a markdown summary.
-    3. cw rotate NAME           — compacts memory, generates/adopts HANDOFF.md, archives old.
+    3. cw reset NAME            — compacts memory, generates/adopts HANDOFF.md, archives history, keeps files.
     4. cw                       — pick the same name; new session opens with the handoff seeded.
-    5. cw archive list          — peek at archives anytime.
-    6. cw purge --older-than 30d — periodic cleanup of old rotations.
+    5. cw archive list          — peek at archived history anytime (session-only entries are tagged).
+    6. cw purge --older-than 30d — periodic cleanup of old archives.
 """)
 
 
@@ -1333,10 +1410,21 @@ def main():
             cmd_handoff(name, "adopt", source=src)
         else:
             print(f"  {RED}handoff requires --adopt FILE or --from-jsonl{RESET}")
-    elif args[0] == "refresh" and len(args) >= 2:
-        refresh_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
+    elif args[0] in ("reset", "refresh") and len(args) >= 2:
+        # Unified reset. Default = light (keep files, archive history — recoverable).
+        #   --full  → clean-slate rotate (archive entire workspace dir)
+        #   --purge → delete session history instead of archiving (reclaim disk)
+        flags = args[2:]
+        if "--full" in flags:
+            reset_mode = "full"
+        elif "--purge" in flags:
+            reset_mode = "purge"
+        else:
+            reset_mode = "light"
+        reset_workspace(args[1], mode=reset_mode, use_tmux=top_use_tmux, bg=top_bg)
     elif args[0] == "rotate" and len(args) >= 2:
-        rotate_workspace(args[1], use_tmux=top_use_tmux, bg=top_bg)
+        # Back-compat alias: rotate == full clean-slate reset.
+        reset_workspace(args[1], mode="full", use_tmux=top_use_tmux, bg=top_bg)
     elif args[0] == "shelve" and len(args) >= 2:
         shelve_workspace(args[1])
     elif args[0] == "archive":
