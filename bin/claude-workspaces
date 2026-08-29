@@ -402,7 +402,8 @@ def compact_plan(name):
     if result.returncode != 0:
         print(f"\n  {RED}Curator exited {result.returncode}. Staging left for inspection:{RESET}")
         print(f"  {staged_dir}")
-        return
+        print(f"  {DIM}Memory left untouched. Discard with: claude-workspaces compact {name} --discard{RESET}")
+        return None
 
     summary = staged_dir / ".compaction-summary.md"
     if summary.exists():
@@ -416,27 +417,51 @@ def compact_plan(name):
     before = len(list(memory_dir.glob("*.md")))
     after = len(list(staged_dir.glob("*.md")))
     print(f"  Before: {before} files    After: {after} files")
+
+    # An empty staging dir is a curator failure, not a valid "compact to nothing".
+    # Applying it would delete every memory entry, so refuse to hand it back as usable.
+    if after == 0:
+        print(f"\n  {RED}Curator wrote no memory files — staging is empty.{RESET}")
+        print(f"  {DIM}Memory left untouched ({before} entries). Inspect {staged_dir},{RESET}")
+        print(f"  {DIM}then: claude-workspaces compact {name} --discard{RESET}")
+        return None
+
     print(f"\n  Review:  diff -r {memory_dir} {staged_dir}")
     print(f"  Apply:   claude-workspaces compact {name} --apply")
     print(f"  Discard: claude-workspaces compact {name} --discard")
     print(f"  Undo later: claude-workspaces compact {name} --undo")
+    return staged_dir
 
 
-def compact_apply(name):
-    """Stage 2 — swap memory.staged/ into memory/."""
+def compact_apply(name, force=False):
+    """Stage 2 — swap memory.staged/ into memory/.
+
+    Applying deletes memory/ outright, so an empty staging dir (curator crashed,
+    wrote nothing, or was left behind by an aborted run) is refused: that path
+    silently wipes every memory entry. Pass force=True to override.
+    """
     memory_dir = workspace_memory_dir(name)
     parent = memory_dir.parent
     staged_dir = parent / "memory.staged"
     if not staged_dir.exists():
         print(f"  {RED}No staged compaction for '{name}'. Run 'compact {name}' first.{RESET}")
-        return
+        return False
+
+    staged_md = list(staged_dir.glob("*.md"))
+    live_md = list(memory_dir.glob("*.md")) if memory_dir.exists() else []
+    if not staged_md and live_md and not force:
+        print(f"  {RED}Refusing to apply: memory.staged/ has no .md files but memory/ has {len(live_md)}.{RESET}")
+        print(f"  {DIM}Applying would wipe memory. Discard: claude-workspaces compact {name} --discard{RESET}")
+        print(f"  {DIM}Override (destroys memory): claude-workspaces compact {name} --apply --force{RESET}")
+        return False
 
     import shutil
     if memory_dir.exists():
         shutil.rmtree(str(memory_dir))
     staged_dir.rename(memory_dir)
-    print(f"  {GREEN}Applied. Memory updated at {memory_dir}.{RESET}")
+    print(f"  {GREEN}Applied. Memory updated at {memory_dir} ({len(staged_md)} entries).{RESET}")
     print(f"  {DIM}Backup retained — use '--undo' to revert.{RESET}")
+    return True
 
 
 def compact_discard(name):
@@ -479,7 +504,7 @@ HANDOFF_CURATOR_PROMPT = """You are writing a HANDOFF.md document for the next C
 rotated out. Your job is to produce a comprehensive markdown handoff that lets a fresh \
 Claude session pick up exactly where this one left off, *without* needing to re-read the \
 entire conversation.
-
+{prior_handoff}{other_sessions}
 Capture, in this order:
 
 1. **Current goal** — what the user is trying to accomplish right now.
@@ -496,10 +521,44 @@ Write in clear, structured markdown. Use headings, tables, and bullet lists. Inc
 specific file paths and command examples wherever they aid recall. Aim for thoroughness \
 over brevity — this document replaces hours of conversation for the next session.
 
+The handoff must be CUMULATIVE. Everything that is still true, still open, or still \
+load-bearing has to survive into this document, whether it came from the resumed \
+conversation, an earlier handoff, or another transcript. Once this reset completes, the \
+transcripts move to the archive and this file is the only thing the next session reads.
+
 Write the file to: {handoff_path}
 
 After writing, output one line confirming the file was created and its size in bytes. \
 Do not output anything else."""
+
+
+PRIOR_HANDOFF_BLOCK = """
+A handoff from an earlier reset of this workspace is preserved at:
+  {prior_path}
+Read it FIRST. Carry forward everything in it that is still true or still open. The new \
+handoff must be a superset of that one, not a replacement that quietly drops what earlier \
+sessions established. Only omit an item if the resumed conversation shows it was completed, \
+superseded, or abandoned — and say so explicitly when you do.
+"""
+
+
+OTHER_SESSIONS_BLOCK = """
+This workspace has {total} session transcripts, and ALL of them are about to be archived. \
+The conversation you have resumed is only the most recent one, so anything that happened in \
+the others is about to leave the working set. Mine them before writing.
+
+Transcripts to review ({n_review} of {total}):
+{review_list}
+{unreviewed_note}
+These are large JSONL files — one JSON object per line. Do not read them whole. Use shell \
+tools to pull out the human turns and the assistant's summaries, for example:
+  jq -r 'select(.message.role=="user") | .message.content' FILE 2>/dev/null | head -100
+  grep -o '"role":"user"' FILE | wc -l
+
+End the document with a section titled "## Coverage" that lists, by filename, which \
+transcripts you actually reviewed and which you did not, so the next session knows exactly \
+what still exists only in the archive.
+"""
 
 
 def workspace_project_dir(name):
@@ -515,26 +574,32 @@ def lineage_path(name):
     return WORKSPACES_DIR / name / "LINEAGE.md"
 
 
-def append_lineage(name, archived_as, before_count, after_count, had_handoff):
+def append_lineage(name, archived_as, before_count, after_count, handoff_note):
     """Append a row to the new workspace's LINEAGE.md (creating it if needed)."""
     lp = lineage_path(name)
     _ensure_lineage_header(lp, name)
     ts = time.strftime("%Y-%m-%d %H:%M")
+    if isinstance(handoff_note, bool):
+        handoff_note = "yes" if handoff_note else "no"
     with lp.open("a") as f:
-        f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+        f.write(f"| {ts} | {archived_as} | {before_count} | {after_count} | {handoff_note} |\n")
 
 
-def append_lineage_refresh(name, before_count, after_count, had_handoff, label="reset"):
+def append_lineage_refresh(name, before_count, after_count, handoff_note, label="reset"):
     """Append a light-reset row to LINEAGE.md (no full-workspace archive).
 
     `label` records what happened to the session history (e.g. the session-archive
-    dir name, or 'purge (deleted)').
+    dir name, or 'purge (deleted)'). `handoff_note` records what happened to the
+    handoff — 'regenerated', 'reused (stale)', and so on. A bare 'yes' hid the case
+    that matters most: a months-old handoff carried forward untouched.
     """
     lp = lineage_path(name)
     _ensure_lineage_header(lp, name)
     ts = time.strftime("%Y-%m-%d %H:%M")
+    if isinstance(handoff_note, bool):
+        handoff_note = "yes" if handoff_note else "no"
     with lp.open("a") as f:
-        f.write(f"| {ts} | {label} | {before_count} | {after_count} | {'yes' if had_handoff else 'no'} |\n")
+        f.write(f"| {ts} | {label} | {before_count} | {after_count} | {handoff_note} |\n")
 
 
 def _ensure_lineage_header(lp, name):
@@ -548,6 +613,67 @@ def _ensure_lineage_header(lp, name):
         )
 
 
+# How many transcripts beyond the resumed one the curator is asked to mine. Reading is not
+# free, so this is capped — but never silently: whatever is left over is named in the prompt
+# and in the archive MANIFEST.md so nothing drops out of view unannounced.
+HANDOFF_REVIEW_LIMIT = 8
+
+
+def workspace_session_jsonls(name):
+    """All session transcripts for a workspace, newest first."""
+    project_dir = workspace_project_dir(name)
+    if not project_dir.exists():
+        return []
+    return sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def handoff_status(name, jsonls=None):
+    """Classify the workspace's HANDOFF.md as 'missing', 'stale', or 'current'.
+
+    A handoff is only 'current' when it was written AFTER every session transcript.
+    If any transcript is newer, real work has happened since the document was written,
+    and reusing it would seed the next session with an out-of-date picture — the exact
+    way context goes missing across repeated resets.
+
+    Returns (state, path, n_newer_transcripts).
+    """
+    hp = WORKSPACES_DIR / name / "HANDOFF.md"
+    if not hp.exists():
+        return "missing", hp, 0
+    if jsonls is None:
+        jsonls = workspace_session_jsonls(name)
+    h_mtime = hp.stat().st_mtime
+    newer = [j for j in jsonls if j.stat().st_mtime > h_mtime]
+    if newer:
+        return "stale", hp, len(newer)
+    return "current", hp, 0
+
+
+def handoff_history_dir(name):
+    return WORKSPACES_DIR / name / "handoffs"
+
+
+def preserve_existing_handoff(name):
+    """Copy the current HANDOFF.md into <workspace>/handoffs/HANDOFF-<ts>.md.
+
+    Every writer of HANDOFF.md calls this first, so a regenerated handoff can never
+    erase the one it replaces. Returns the preserved path, or None if there was none.
+    """
+    hp = WORKSPACES_DIR / name / "HANDOFF.md"
+    if not hp.exists():
+        return None
+    hist = handoff_history_dir(name)
+    hist.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(hp.stat().st_mtime))
+    dst = hist / f"HANDOFF-{ts}.md"
+    if dst.exists():
+        dst = hist / f"HANDOFF-{ts}-{int(time.time()*1000) % 1000}.md"
+    import shutil
+    shutil.copy2(str(hp), str(dst))
+    print(f"  {DIM}Previous handoff preserved → handoffs/{dst.name}{RESET}")
+    return dst
+
+
 def handoff_adopt(name, source_file):
     """Copy/move an existing markdown to the workspace's HANDOFF.md."""
     workspace_dir = WORKSPACES_DIR / name
@@ -559,31 +685,74 @@ def handoff_adopt(name, source_file):
         print(f"  {RED}Source markdown not found: {src}{RESET}")
         return None
     dst = workspace_dir / "HANDOFF.md"
+    preserve_existing_handoff(name)
     import shutil
     shutil.copy2(str(src), str(dst))
+    os.utime(str(dst), None)
     print(f"  {GREEN}Adopted {src} → {dst}{RESET}")
     return dst
 
 
 def handoff_from_jsonl(name):
-    """Spawn `claude -p --resume <id>` against the workspace's last session jsonl, asking
-    it to write HANDOFF.md. Slow (one full read of the bloated session) but one-shot."""
+    """Regenerate HANDOFF.md by resuming the newest session transcript.
+
+    The resumed conversation is the richest source, but it is not the only one: a
+    workspace usually holds several transcripts and a reset archives all of them. So the
+    curator is also handed the other transcripts (capped, with the remainder named) and
+    the previous handoff, and is told the new document must be cumulative.
+
+    Returns the handoff path on success, None on any failure — callers must treat None
+    as "do not touch session history yet".
+    """
     workspace_dir = WORKSPACES_DIR / name
     if not workspace_dir.exists():
         print(f"  {RED}Workspace '{name}' does not exist.{RESET}")
         return None
 
-    # Find most recent jsonl in the workspace's project dir.
-    project_dir = workspace_project_dir(name)
-    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    jsonls = workspace_session_jsonls(name)
     if not jsonls:
         print(f"  {RED}No prior session jsonl found for '{name}'. Cannot generate handoff.{RESET}")
         return None
     session_id = jsonls[0].stem
     handoff_path = workspace_dir / "HANDOFF.md"
 
-    prompt = HANDOFF_CURATOR_PROMPT.format(name=name, handoff_path=str(handoff_path))
-    print(f"  {CYAN}Generating handoff from session {session_id} (this may take 1–3 minutes)…{RESET}")
+    # Keep the handoff we are about to replace, and point the curator at it.
+    preserved = preserve_existing_handoff(name)
+    prior_block = PRIOR_HANDOFF_BLOCK.format(prior_path=preserved) if preserved else ""
+
+    # Everything except the resumed transcript is context the curator would otherwise miss.
+    others = jsonls[1:]
+    other_block = ""
+    if others:
+        review = others[:HANDOFF_REVIEW_LIMIT]
+        skipped = others[HANDOFF_REVIEW_LIMIT:]
+        lines = []
+        for j in review:
+            kb = j.stat().st_size // 1024
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(j.stat().st_mtime))
+            lines.append(f"  - {j}  ({kb} KB, last written {when})")
+        if skipped:
+            unreviewed = (
+                f"\nA further {len(skipped)} transcript(s) are being archived and are NOT listed "
+                f"for review: {', '.join(j.name for j in skipped)}. Name them under \"Sessions not "
+                f"reviewed\" in the Coverage section.\n"
+            )
+            print(f"  {YELLOW}{len(skipped)} older transcript(s) exceed the review cap "
+                  f"({HANDOFF_REVIEW_LIMIT}) — they will be archived but not mined.{RESET}")
+        else:
+            unreviewed = ""
+        other_block = OTHER_SESSIONS_BLOCK.format(
+            total=len(jsonls), n_review=len(review) + 1,
+            review_list="\n".join(lines), unreviewed_note=unreviewed,
+        )
+
+    prompt = HANDOFF_CURATOR_PROMPT.format(
+        name=name, handoff_path=str(handoff_path),
+        prior_handoff=prior_block, other_sessions=other_block,
+    )
+    print(f"  {CYAN}Generating handoff from session {session_id} "
+          f"({len(jsonls)} transcript(s) in scope; this may take 1–3 minutes)…{RESET}")
+    before_mtime = handoff_path.stat().st_mtime if handoff_path.exists() else 0
     result = subprocess.run(
         ["claude", "-p", prompt, "--resume", session_id, "--dangerously-skip-permissions"],
         cwd=str(workspace_dir),
@@ -594,6 +763,19 @@ def handoff_from_jsonl(name):
     if not handoff_path.exists():
         print(f"  {RED}Generator finished but HANDOFF.md not written.{RESET}")
         return None
+    if handoff_path.stat().st_mtime <= before_mtime:
+        print(f"  {RED}Generator finished but HANDOFF.md was not updated.{RESET}")
+        if preserved:
+            print(f"  {DIM}Prior handoff is still intact at handoffs/{preserved.name}{RESET}")
+        return None
+    if handoff_path.stat().st_size < 512:
+        print(f"  {RED}HANDOFF.md is only {handoff_path.stat().st_size} bytes — too thin to trust "
+              f"as a replacement for {len(jsonls)} transcript(s).{RESET}")
+        print(f"  {DIM}Inspect it, or re-run: cw handoff {name} --from-jsonl{RESET}")
+        return None
+    # Stamp it now so the staleness check sees it as newer than every transcript,
+    # including any the generator run itself appended to.
+    os.utime(str(handoff_path), None)
     print(f"  {GREEN}Wrote {handoff_path} ({handoff_path.stat().st_size} bytes){RESET}")
     return handoff_path
 
@@ -672,16 +854,24 @@ def archive_workspace(name):
     return archive_root
 
 
-def archive_session_jsonls(name, jsonls):
-    """Archive only the session jsonl files (light reset) into
-    ~/workspaces/.archive/<name>-<ts>-session/, preserving conversation history
-    without disturbing the live workspace or its working files.
+def archive_session_jsonls(name, jsonls, handoff_note="unknown"):
+    """Archive session history (light reset) into ~/workspaces/.archive/<name>-<ts>-session/.
+
+    The archive is made self-contained so that "go back and check what the handoff missed"
+    is cheap and complete:
+      - every session transcript
+      - each transcript's sidecar directory (tool-results/ etc.), which the jsonl
+        references by relative path and which is useless once separated from it
+      - a copy of the HANDOFF.md that was in effect at reset time
+      - MANIFEST.md listing every archived transcript with size and last-written time
 
     Returns the archive path, or None if there was nothing to archive.
     """
     if not jsonls:
         return None
     ensure_archive_dir()
+    project_dir = workspace_project_dir(name)
+    workspace_dir = WORKSPACES_DIR / name
     ts = time.strftime("%Y%m%d-%H%M%S")
     dest = ARCHIVE_DIR / f"{name}-{ts}-session"
     if dest.exists():
@@ -690,18 +880,57 @@ def archive_session_jsonls(name, jsonls):
     dest.mkdir(parents=True)
 
     import shutil
+    rows = []
     moved = 0
+    sidecars = 0
     for j in jsonls:
+        kb = j.stat().st_size // 1024
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(j.stat().st_mtime))
+        # The per-session sidecar dir holds offloaded tool results the transcript points at.
+        sidecar = project_dir / j.stem
+        has_sidecar = sidecar.is_dir()
         shutil.move(str(j), str(dest / j.name))
         moved += 1
+        if has_sidecar:
+            shutil.move(str(sidecar), str(dest / sidecar.name))
+            sidecars += 1
+        rows.append(f"| {j.name} | {kb} KB | {when} | {'yes' if has_sidecar else 'no'} |")
+
+    # Snapshot the handoff that was handed to the next session, so the archive records
+    # exactly what the fresh session was told — and what it therefore was not told.
+    handoff_src = workspace_dir / "HANDOFF.md"
+    if handoff_src.exists():
+        shutil.copy2(str(handoff_src), str(dest / "HANDOFF-at-reset.md"))
+
+    manifest = [
+        f"# {name} — archived session history",
+        "",
+        f"Archived {time.strftime('%Y-%m-%d %H:%M:%S')} by a `cw reset`.",
+        f"Handoff at reset: **{handoff_note}**"
+        + ("  (copy: `HANDOFF-at-reset.md`)" if handoff_src.exists() else "  (none)"),
+        "",
+        f"{moved} transcript(s), {sidecars} sidecar director(ies).",
+        "",
+        "| Transcript | Size | Last written | Sidecar |",
+        "|---|---|---|---|",
+    ] + rows + [
+        "",
+        "Restore everything back into the live project dir with:",
+        "",
+        f"    cw archive restore {dest.name}",
+        "",
+    ]
+    (dest / "MANIFEST.md").write_text("\n".join(manifest))
 
     meta = {
         "name": name,
         "archived_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "kind": "session-only",
         "jsonl_count": moved,
-        "project_dir": str(workspace_project_dir(name)),
-        "workspace_dir": str(WORKSPACES_DIR / name),
+        "sidecar_count": sidecars,
+        "handoff": handoff_note,
+        "project_dir": str(project_dir),
+        "workspace_dir": str(workspace_dir),
     }
     (dest / "rotation-meta.json").write_text(json.dumps(meta, indent=2))
     return dest
@@ -772,8 +1001,18 @@ def archive_restore(archived_name):
         for j in src.glob("*.jsonl"):
             shutil.move(str(j), str(project_dst / j.name))
             restored += 1
+        # Sidecar dirs (tool-results/) must go back with their transcript, or the
+        # restored history has dangling references to offloaded tool output.
+        sidecars = 0
+        for d in [p for p in src.iterdir() if p.is_dir()]:
+            target = project_dst / d.name
+            if target.exists():
+                print(f"  {YELLOW}Skipping sidecar {d.name} — already present in project dir.{RESET}")
+                continue
+            shutil.move(str(d), str(target))
+            sidecars += 1
         src.rename(src.parent / f".restored-{src.name}")
-        print(f"  {GREEN}Restored {restored} session jsonl → {project_dst}{RESET}")
+        print(f"  {GREEN}Restored {restored} session jsonl + {sidecars} sidecar dir(s) → {project_dst}{RESET}")
         return
 
     workspace_dst = Path(meta["workspace_dir"])
@@ -849,22 +1088,27 @@ def purge_archives(older_than_days=None, dry_run=False):
     print(f"  {GREEN}Deleted {len(candidates)} archive(s).{RESET}")
 
 
-def reset_workspace(name, mode="light", use_tmux=False, bg=False):
+def reset_workspace(name, mode="light", use_tmux=False, bg=False, reuse_handoff=False):
     """Unified context reset. One command, three modes — the safe default is 'light':
 
-      light  (default) — compact memory → handoff → ARCHIVE the session jsonl →
+      light  (default) — handoff → compact memory → ARCHIVE the session history →
                          keep all workspace files in place → launch fresh.
                          History is preserved (recoverable) and day-to-day files stay put.
-      full             — compact → handoff → archive the ENTIRE workspace dir →
+      full             — handoff → compact → archive the ENTIRE workspace dir →
                          recreate a clean workspace (CLAUDE.md + memory + handoff) → fresh.
                          Use when you want a clean slate. Delegates to rotate_workspace().
-      purge            — like light, but DELETES the session jsonl instead of archiving it.
+      purge            — like light, but DELETES the session history instead of archiving.
                          Reclaims disk; history is NOT recoverable.
 
-    light and full both preserve history. Only purge destroys it.
+    Ordering matters: the handoff is produced BEFORE anything is compacted, archived, or
+    deleted, and a failure there aborts the reset with history untouched. A reset must
+    never consume the transcripts it failed to summarise.
+
+    reuse_handoff=True keeps an existing HANDOFF.md even when newer sessions have made it
+    stale. That skips a 1-3 minute regeneration at the cost of carrying an out-of-date seed.
     """
     if mode == "full":
-        rotate_workspace(name, use_tmux=use_tmux, bg=bg)
+        rotate_workspace(name, use_tmux=use_tmux, bg=bg, reuse_handoff=reuse_handoff)
         return
 
     workspace_dir = WORKSPACES_DIR / name
@@ -874,10 +1118,21 @@ def reset_workspace(name, mode="light", use_tmux=False, bg=False):
 
     memory_dir = workspace_memory_dir(name)
     project_dir = workspace_project_dir(name)
-    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if project_dir.exists() else []
+    jsonls = workspace_session_jsonls(name)
     jsonl_size_kb = sum(j.stat().st_size for j in jsonls) // 1024
     mem_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
-    have_handoff = (workspace_dir / "HANDOFF.md").exists()
+    h_state, handoff_path, n_newer = handoff_status(name, jsonls)
+
+    # A memory.staged/ left over from an aborted compaction must not be auto-applied:
+    # applying it swaps stale (or empty) curated memory over the live memory dir.
+    staged_dir = project_dir / "memory.staged"
+    if staged_dir.exists():
+        print(f"\n  {RED}A staged compaction is already pending for '{name}'.{RESET}")
+        print(f"  {DIM}{staged_dir} ({len(list(staged_dir.glob('*.md')))} .md files){RESET}")
+        print(f"  {DIM}Resolve it first, then re-run the reset:{RESET}")
+        print(f"    cw compact {name} --apply     # accept it")
+        print(f"    cw compact {name} --discard   # throw it away")
+        return
 
     destructive = (mode == "purge")
     if destructive:
@@ -885,13 +1140,34 @@ def reset_workspace(name, mode="light", use_tmux=False, bg=False):
     else:
         hist_line = f"will be archived → ~/workspaces/.archive/{name}-<ts>-session/ ({GREEN}recoverable{RESET})"
 
+    if h_state == "current":
+        handoff_line = f"{GREEN}present and current{RESET} (written after the last session) — will reuse"
+        need_handoff = False
+    elif h_state == "stale":
+        age = time.strftime("%Y-%m-%d", time.localtime(handoff_path.stat().st_mtime))
+        if reuse_handoff:
+            handoff_line = (f"{YELLOW}present but STALE{RESET} (written {age}; {n_newer} session(s) since) "
+                            f"— {YELLOW}reusing anyway (--reuse-handoff){RESET}")
+            need_handoff = False
+        else:
+            handoff_line = (f"{YELLOW}present but STALE{RESET} (written {age}; {n_newer} session(s) since) "
+                            f"— will REGENERATE")
+            need_handoff = True
+    else:
+        handoff_line = ("missing — will generate from session history" if jsonls
+                        else f"{YELLOW}missing, and no session history to generate from{RESET}")
+        need_handoff = bool(jsonls)
+
     print(f"\n  {BOLD}Reset plan for '{name}'  [{mode}]:{RESET}")
     print(f"    Session files:        {len(jsonls)} jsonl ({jsonl_size_kb} KB total)")
     print(f"    Memory entries:       {mem_count}")
-    print(f"    HANDOFF.md:           {'present (will keep)' if have_handoff else 'missing — will generate from jsonl'}")
+    print(f"    HANDOFF.md:           {handoff_line}")
     print(f"    Compaction:           {'will run' if mem_count > 0 else 'skip (no memory yet)'}")
     print(f"    Workspace files:      {BOLD}UNCHANGED{RESET} (dashboards, scripts, data stay)")
     print(f"    Session history:      {hist_line}")
+    if need_handoff and len(jsonls) > HANDOFF_REVIEW_LIMIT + 1:
+        print(f"    {YELLOW}Note:{RESET} only the newest {HANDOFF_REVIEW_LIMIT + 1} of {len(jsonls)} transcripts")
+        print(f"                          will be mined for the handoff; the rest are archived unread.")
     print()
     confirm = input(f"  Proceed? [y/N]: ").strip().lower()
     if confirm != "y":
@@ -904,38 +1180,55 @@ def reset_workspace(name, mode="light", use_tmux=False, bg=False):
         print(f"  {YELLOW}Stopping running tmux session…{RESET}")
         subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
 
-    # 2. Compact memory (if any).
+    # 2. HANDOFF.md FIRST — this is the only thing that survives the reset, so it is
+    #    produced while every transcript is still in place, and a failure aborts here.
+    print(f"\n  {BOLD}Step 1/3: HANDOFF.md…{RESET}")
+    if not need_handoff:
+        print(f"  {DIM}Reusing existing HANDOFF.md ({h_state}).{RESET}")
+        handoff_note = f"reused ({h_state})"
+    elif not jsonls:
+        print(f"  {YELLOW}No session transcripts — proceeding without a seed file.{RESET}")
+        handoff_note = "none (no session history)"
+    else:
+        if h_state == "stale":
+            print(f"  {DIM}Existing handoff predates {n_newer} transcript(s) — regenerating.{RESET}")
+        if handoff_from_jsonl(name) is None:
+            print(f"\n  {RED}Handoff generation failed — reset aborted.{RESET}")
+            print(f"  {DIM}Nothing was compacted, archived, or deleted. All history is intact.{RESET}")
+            print(f"  {DIM}Retry the handoff:   cw handoff {name} --from-jsonl{RESET}")
+            print(f"  {DIM}Or reset reusing the old handoff:  cw reset {name} --reuse-handoff{RESET}")
+            return
+        handoff_note = "regenerated"
+
+    # 3. Compact memory (if any). A curator failure leaves memory alone rather than
+    #    swapping an empty staging dir over it.
     if mem_count > 0:
-        print(f"\n  {BOLD}Step 1/3: Compacting memory…{RESET}")
-        compact_plan(name)
-        staged = project_dir / "memory.staged"
-        if staged.exists():
+        print(f"\n  {BOLD}Step 2/3: Compacting memory…{RESET}")
+        staged = compact_plan(name)
+        if staged is not None:
             compact_apply(name)
         else:
-            print(f"  {YELLOW}Compaction produced no staging dir — keeping memory as-is.{RESET}")
-
-    # 3. Generate HANDOFF.md if missing.
-    print(f"\n  {BOLD}Step 2/3: HANDOFF.md…{RESET}")
-    if not have_handoff:
-        if jsonls:
-            handoff_from_jsonl(name)
-        else:
-            print(f"  {YELLOW}No jsonl + no HANDOFF.md — proceeding without a seed file.{RESET}")
+            print(f"  {YELLOW}No usable staging produced — memory kept as-is ({mem_count} entries).{RESET}")
     else:
-        print(f"  {DIM}Using existing HANDOFF.md.{RESET}")
+        print(f"\n  {BOLD}Step 2/3: Compaction skipped (no memory yet).{RESET}")
 
-    # 4. Archive (default) or purge (opt-in) the session jsonl files.
+    # 4. Archive (default) or purge (opt-in) the session history.
+    import shutil
     if destructive:
         print(f"\n  {BOLD}Step 3/3: Deleting session history…{RESET}")
         for j in jsonls:
+            sidecar = project_dir / j.stem
             j.unlink()
+            if sidecar.is_dir():
+                shutil.rmtree(str(sidecar))
             print(f"  {DIM}Removed {j.name}{RESET}")
         archived_as = "purge (deleted)"
     else:
         print(f"\n  {BOLD}Step 3/3: Archiving session history…{RESET}")
-        arch = archive_session_jsonls(name, jsonls)
+        arch = archive_session_jsonls(name, jsonls, handoff_note=handoff_note)
         if arch is not None:
             print(f"  {GREEN}Archived {len(jsonls)} jsonl → {arch.name}{RESET}")
+            print(f"  {DIM}Inventory: ~/workspaces/.archive/{arch.name}/MANIFEST.md{RESET}")
             print(f"  {DIM}Recover later with: cw archive restore {arch.name}{RESET}")
             archived_as = arch.name
         else:
@@ -948,15 +1241,15 @@ def reset_workspace(name, mode="light", use_tmux=False, bg=False):
         del sessions[name]
         save_sessions(sessions)
 
-    # Record in LINEAGE.md.
+    # Record in LINEAGE.md — the handoff column records what actually happened, so a
+    # reused stale handoff is visible in the log instead of reading as a clean "yes".
     after_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
-    append_lineage_refresh(name, mem_count, after_count,
-                           have_handoff or (workspace_dir / "HANDOFF.md").exists(),
-                           label=archived_as)
+    append_lineage_refresh(name, mem_count, after_count, handoff_note, label=archived_as)
 
     print(f"\n  {GREEN}Reset complete ({mode}).{RESET}")
     print(f"  {DIM}Workspace files: untouched{RESET}")
-    print(f"  {DIM}Memory: compacted and carried forward{RESET}")
+    print(f"  {DIM}Memory: {after_count} entries (was {mem_count}){RESET}")
+    print(f"  {DIM}Handoff: {handoff_note}{RESET}")
     print(f"  {DIM}Session history: {'deleted' if destructive else 'archived (recoverable)'}{RESET}")
 
     # 5. Offer to launch fresh.
@@ -967,7 +1260,7 @@ def reset_workspace(name, mode="light", use_tmux=False, bg=False):
                          seed_file=seed if seed.exists() else None, bg=bg)
 
 
-def rotate_workspace(name, use_tmux=False, bg=False):
+def rotate_workspace(name, use_tmux=False, bg=False, reuse_handoff=False):
     """Headline rotation: compact → handoff → archive → re-create → fresh launch.
 
     Same-name rotation: the workspace is archived under .archive/<name>-<ts>/ and a fresh
@@ -982,16 +1275,38 @@ def rotate_workspace(name, use_tmux=False, bg=False):
     # 1. Plan + confirm.
     memory_dir = workspace_memory_dir(name)
     project_dir = workspace_project_dir(name)
-    jsonls = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if project_dir.exists() else []
+    jsonls = workspace_session_jsonls(name)
     jsonl_size_kb = (jsonls[0].stat().st_size // 1024) if jsonls else 0
     mem_count = len(list(memory_dir.glob("*.md"))) if memory_dir.exists() else 0
-    handoff_existing = workspace_dir / "HANDOFF.md"
-    have_handoff = handoff_existing.exists()
+    h_state, handoff_existing, n_newer = handoff_status(name, jsonls)
+
+    # Never auto-apply a staging dir left behind by an aborted compaction.
+    staged_dir = project_dir / "memory.staged"
+    if staged_dir.exists():
+        print(f"\n  {RED}A staged compaction is already pending for '{name}'.{RESET}")
+        print(f"  {DIM}Resolve it first:  cw compact {name} --apply  |  cw compact {name} --discard{RESET}")
+        return
+
+    if h_state == "current":
+        handoff_line = f"{GREEN}present and current{RESET} — will adopt"
+        need_handoff = False
+    elif h_state == "stale":
+        age = time.strftime("%Y-%m-%d", time.localtime(handoff_existing.stat().st_mtime))
+        if reuse_handoff:
+            handoff_line = f"{YELLOW}STALE{RESET} (written {age}; {n_newer} session(s) since) — reusing (--reuse-handoff)"
+            need_handoff = False
+        else:
+            handoff_line = f"{YELLOW}STALE{RESET} (written {age}; {n_newer} session(s) since) — will REGENERATE"
+            need_handoff = True
+    else:
+        handoff_line = ("missing — will generate from jsonl" if jsonls
+                        else f"{YELLOW}missing, and no session history to generate from{RESET}")
+        need_handoff = bool(jsonls)
 
     print(f"\n  {BOLD}Rotation plan for '{name}':{RESET}")
-    print(f"    Last session jsonl:   {jsonls[0].name if jsonls else '(none)'}  ({jsonl_size_kb} KB)")
+    print(f"    Session transcripts:  {len(jsonls)}  (newest: {jsonls[0].name if jsonls else '(none)'}, {jsonl_size_kb} KB)")
     print(f"    Memory entries:       {mem_count}")
-    print(f"    HANDOFF.md:           {'present (will adopt)' if have_handoff else 'missing — will generate from jsonl'}")
+    print(f"    HANDOFF.md:           {handoff_line}")
     print(f"    Compaction:           {'will run' if mem_count > 0 else 'skip (no memory yet)'}")
     print(f"    Archive target:       ~/workspaces/.archive/{name}-{time.strftime('%Y%m%d-%H%M%S')}/")
     print(f"    New workspace:        ~/workspaces/{name}/  (fresh, seeded with HANDOFF.md)")
@@ -1007,28 +1322,35 @@ def rotate_workspace(name, use_tmux=False, bg=False):
         print(f"  {YELLOW}Stopping running tmux session…{RESET}")
         subprocess.run(["tmux", "kill-session", "-t", "=" + tmux_name], capture_output=True)
 
-    # 3. Compact (auto-apply for atomic rotation flow).
+    # 3. HANDOFF.md first — rotation archives the whole workspace, so the handoff is
+    #    produced while the transcripts are still in place and a failure aborts here.
+    print(f"\n  {BOLD}Step 1/4: HANDOFF.md…{RESET}")
+    if not need_handoff:
+        print(f"  {DIM}Using existing HANDOFF.md ({h_state}).{RESET}")
+        handoff_note = f"reused ({h_state})"
+    elif not jsonls:
+        print(f"  {YELLOW}No jsonl + no HANDOFF.md — proceeding without a seed file.{RESET}")
+        handoff_note = "none (no session history)"
+    else:
+        if handoff_from_jsonl(name) is None:
+            print(f"\n  {RED}Handoff generation failed — rotation aborted.{RESET}")
+            print(f"  {DIM}Nothing was compacted or archived. The workspace is untouched.{RESET}")
+            print(f"  {DIM}Retry: cw handoff {name} --from-jsonl, or cw reset {name} --full --reuse-handoff{RESET}")
+            return
+        handoff_note = "regenerated"
+
+    # 4. Compact (auto-apply for atomic rotation flow).
     before_count = mem_count
     after_count = mem_count
     if mem_count > 0:
-        print(f"\n  {BOLD}Step 1/4: Compacting memory…{RESET}")
-        compact_plan(name)
-        staged = project_dir / "memory.staged"
-        if not staged.exists():
-            print(f"  {RED}Compaction produced no staging dir — aborting rotation.{RESET}")
+        print(f"\n  {BOLD}Step 2/4: Compacting memory…{RESET}")
+        staged = compact_plan(name)
+        if staged is None:
+            print(f"  {RED}Compaction produced no usable staging dir — aborting rotation.{RESET}")
+            print(f"  {DIM}Nothing was archived. Memory is untouched ({mem_count} entries).{RESET}")
             return
         after_count = len(list(staged.glob("*.md")))
         compact_apply(name)
-
-    # 4. Generate or adopt HANDOFF.md.
-    print(f"\n  {BOLD}Step 2/4: HANDOFF.md…{RESET}")
-    if not have_handoff:
-        if not jsonls:
-            print(f"  {YELLOW}No jsonl + no HANDOFF.md — proceeding without a seed file.{RESET}")
-        else:
-            handoff_from_jsonl(name)
-    else:
-        print(f"  {DIM}Using existing HANDOFF.md.{RESET}")
 
     # 5. Snapshot what we're carrying forward, archive the rest.
     print(f"\n  {BOLD}Step 3/4: Archiving old workspace…{RESET}")
@@ -1044,6 +1366,10 @@ def rotate_workspace(name, use_tmux=False, bg=False):
     # LINEAGE.md (if any) — append-only history carries forward
     if (workspace_dir / "LINEAGE.md").exists():
         shutil.copy2(str(workspace_dir / "LINEAGE.md"), str(snapshot_dir / "LINEAGE.md"))
+    # handoffs/ — the chain of superseded handoffs carries forward too, so the record of
+    # what each past reset told the next session survives the rotation.
+    if handoff_history_dir(name).exists():
+        shutil.copytree(str(handoff_history_dir(name)), str(snapshot_dir / "handoffs"))
     # Compacted memory dir
     if memory_dir.exists():
         shutil.copytree(str(memory_dir), str(snapshot_dir / "memory"))
@@ -1062,13 +1388,15 @@ def rotate_workspace(name, use_tmux=False, bg=False):
         shutil.copy2(str(snapshot_dir / "HANDOFF.md"), str(workspace_dir / "HANDOFF.md"))
     if (snapshot_dir / "LINEAGE.md").exists():
         shutil.copy2(str(snapshot_dir / "LINEAGE.md"), str(workspace_dir / "LINEAGE.md"))
+    if (snapshot_dir / "handoffs").exists():
+        shutil.copytree(str(snapshot_dir / "handoffs"), str(handoff_history_dir(name)))
 
     # Re-create the Claude project dir + carry compacted memory forward.
     project_dir.mkdir(parents=True)
     if (snapshot_dir / "memory").exists():
         shutil.copytree(str(snapshot_dir / "memory"), str(memory_dir))
 
-    append_lineage(name, archive_root.name, before_count, after_count, have_handoff or (workspace_dir / "HANDOFF.md").exists())
+    append_lineage(name, archive_root.name, before_count, after_count, handoff_note)
     shutil.rmtree(str(snapshot_dir))
 
     print(f"\n  {GREEN}Rotation complete.{RESET}")
@@ -1118,7 +1446,7 @@ def show_menu(use_tmux=False, bg=False):
         print(f"  {CYAN}[#]{RESET}  Launch/attach workspace by number")
         print(f"  {CYAN}[n]{RESET}  Create new workspace")
         print(f"  {CYAN}[s]{RESET}  Stop a running workspace")
-        print(f"  {CYAN}[r]{RESET}  Reset a workspace (compact + handoff + archive history + fresh — keeps files)")
+        print(f"  {CYAN}[r]{RESET}  Reset a workspace (handoff + compact + archive history + fresh — keeps files)")
         print(f"  {CYAN}[h]{RESET}  Shelve (hide) a workspace")
         print(f"  {CYAN}[a]{RESET}  Show/restore archived workspaces")
         print(f"  {CYAN}[d]{RESET}  Delete a workspace")
@@ -1253,15 +1581,32 @@ def print_usage():
   {BOLD}Memory compaction:{RESET}
     cw compact NAME                   Curate memory/ → memory.staged/ (dry-run; review first)
     cw compact NAME --apply           Swap memory.staged/ into memory/
+                                      (refuses to apply an EMPTY staging dir over live
+                                       memory; add --force to override)
     cw compact NAME --discard         Throw away the staged version
     cw compact NAME --undo            Restore memory/ from the most recent backup
 
   {BOLD}Context reset (one command, safe by default):{RESET}
-    cw reset NAME                     Compact + handoff + ARCHIVE history + fresh (keeps all files) — recoverable
+    cw reset NAME                     Handoff + compact + ARCHIVE history + fresh (keeps all files) — recoverable
     cw reset NAME --full              Clean slate: archive the ENTIRE workspace dir, recreate fresh
     cw reset NAME --purge             Like default, but DELETE history instead of archiving (reclaim disk)
+    cw reset NAME --reuse-handoff     Keep an out-of-date HANDOFF.md instead of regenerating it
     cw refresh NAME                   Alias for `cw reset NAME` (now archives history, no longer deletes)
     cw rotate NAME                    Alias for `cw reset NAME --full`
+
+    {BOLD}How a reset protects history:{RESET}
+      - The handoff is written FIRST, before anything is compacted, archived, or deleted.
+        If it fails, the reset aborts and every transcript is left where it was.
+      - An existing HANDOFF.md is reused ONLY if it is newer than every session transcript.
+        If sessions have run since it was written, it is regenerated — otherwise each reset
+        would re-seed the next session with an older and older picture.
+      - The handoff it replaces is kept at ~/workspaces/NAME/handoffs/HANDOFF-<ts>.md,
+        and the curator is told to read it and produce a superset, never a replacement.
+      - All session transcripts are in scope, not just the newest. Past the review cap,
+        the remaining transcripts are named in the prompt and in the archive manifest
+        rather than dropped silently.
+      - Archives are self-contained: transcripts, their tool-results sidecars, a copy of
+        the handoff in effect, and MANIFEST.md listing everything.
 
   {BOLD}Handoff / Archive:{RESET}
     cw handoff NAME --adopt FILE      Promote an existing markdown to ~/workspaces/NAME/HANDOFF.md
@@ -1289,6 +1634,7 @@ def print_usage():
 
   {BOLD}File layout:{RESET}
     ~/workspaces/<name>/              Workspace dir (CLAUDE.md, HANDOFF.md, LINEAGE.md)
+    ~/workspaces/<name>/handoffs/     Superseded handoffs, one per reset (never overwritten)
     ~/workspaces/.archive/<id>/       Archived rotations (workspace/, project/, rotation-meta.json)
     ~/.claude/projects/<encoded>/     Per-workspace Claude project (memory/, *.jsonl)
     ~/bin/compaction-prompt.md        Curator prompt template (edit to customize compaction)
@@ -1296,9 +1642,10 @@ def print_usage():
   {BOLD}Typical reset flow:{RESET}
     1. Working in a long session, getting context warnings.
     2. (Optional) Use the brainstorming skill to write a markdown summary.
-    3. cw reset NAME            — compacts memory, generates/adopts HANDOFF.md, archives history, keeps files.
+    3. cw reset NAME            — writes a fresh HANDOFF.md, compacts memory, archives history, keeps files.
     4. cw                       — pick the same name; new session opens with the handoff seeded.
     5. cw archive list          — peek at archived history anytime (session-only entries are tagged).
+       cat ~/workspaces/.archive/<id>/MANIFEST.md   — what that reset archived, and what the handoff covered.
     6. cw purge --older-than 30d — periodic cleanup of old archives.
 """)
 
@@ -1389,7 +1736,7 @@ def main():
         name = args[1]
         flags = args[2:]
         if "--apply" in flags:
-            compact_apply(name)
+            compact_apply(name, force="--force" in flags)
         elif "--undo" in flags:
             compact_undo(name)
         elif "--discard" in flags:
@@ -1421,10 +1768,12 @@ def main():
             reset_mode = "purge"
         else:
             reset_mode = "light"
-        reset_workspace(args[1], mode=reset_mode, use_tmux=top_use_tmux, bg=top_bg)
+        reset_workspace(args[1], mode=reset_mode, use_tmux=top_use_tmux, bg=top_bg,
+                        reuse_handoff="--reuse-handoff" in flags)
     elif args[0] == "rotate" and len(args) >= 2:
         # Back-compat alias: rotate == full clean-slate reset.
-        reset_workspace(args[1], mode="full", use_tmux=top_use_tmux, bg=top_bg)
+        reset_workspace(args[1], mode="full", use_tmux=top_use_tmux, bg=top_bg,
+                        reuse_handoff="--reuse-handoff" in args[2:])
     elif args[0] == "shelve" and len(args) >= 2:
         shelve_workspace(args[1])
     elif args[0] == "archive":
