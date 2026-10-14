@@ -212,7 +212,7 @@ Claude Code will set up QMD (the research database), import your YouTube cookies
 
 | Directory | What it is |
 |---|---|
-| `bin/` | **Claude Workspaces** (`cw`), **import-cookies**, and memory compaction prompt |
+| `bin/` | **import-cookies**. Claude Workspaces (`cw`) and its memory compaction prompt live in their own repo, [claude-workspaces](https://github.com/mikeengleai/claude-workspaces); `install.sh` installs them |
 | `skills/system-map/` | **Daily system map** - Python collector that snapshots your entire system to markdown |
 | `skills/system-upgrade/` | **System upgrade** - 10 checkpointed bash scripts for safe OS and OpenClaw upgrades |
 | `guide/` | **Build guides** - companion guide, linux setup options, authenticated browsing |

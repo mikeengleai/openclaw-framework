@@ -2,7 +2,7 @@
 
 **Prepared for:** OpenClaw talk attendees
 **Send ahead:** 1 hour before the session
-**GitHub repo:** [github.com/openclaw-framework](https://github.com/openclaw-framework) (scripts and sample configs referenced below)
+**GitHub repo:** [github.com/mikeengleai/openclaw-framework](https://github.com/mikeengleai/openclaw-framework) (scripts and sample configs referenced below)
 
 ---
 
@@ -836,19 +836,21 @@ This is simpler than Samba but does not give you a persistent shared directory.
 
 **Maps to:** Chapter 2 (the development loop)
 
-The `cw` (claude-workspaces) script manages tmux-backed Claude Code sessions. It lists workspaces, creates new ones with CLAUDE.md scaffolding, attaches by name, and indexes recent sessions. The production version is 46.6 KB of battle-tested bash.
+The `cw` (claude-workspaces) script manages tmux-backed Claude Code sessions. It lists workspaces, creates new ones with CLAUDE.md scaffolding, attaches by name, and indexes recent sessions. It is a single Python 3 script with no dependencies beyond tmux, maintained at [github.com/mikeengleai/claude-workspaces](https://github.com/mikeengleai/claude-workspaces).
 
 ### Steps
 
 1. Clone the repo:
    ```bash
-   git clone https://github.com/openclaw-framework.git ~/openclaw-framework
+   git clone https://github.com/mikeengleai/claude-workspaces.git ~/tools/claude-workspaces
    ```
 
-2. Install the `cw` script:
+2. Install the `cw` script (it tests the installed copy, then links `~/bin/cw`; put
+   `~/bin` on your `PATH`):
    ```bash
-   sudo cp ~/openclaw-framework/bin/cw /usr/local/bin/cw
-   sudo chmod +x /usr/local/bin/cw
+   cd ~/tools/claude-workspaces
+   mkdir -p ~/.local/share/claude-workspaces
+   HARNESS_INSTALL_DIR=~/.local/share/claude-workspaces sh deploy/install.sh
    ```
 
 3. Verify the install:
@@ -957,7 +959,7 @@ Three things the production system learned the hard way:
 
 ### Where to get help
 
-- **GitHub repo:** [github.com/openclaw-framework](https://github.com/openclaw-framework) (issues and discussions)
+- **GitHub repo:** [github.com/mikeengleai/openclaw-framework](https://github.com/mikeengleai/openclaw-framework) (issues and discussions)
 - **During the talk:** Ask questions at any point. The session is interactive.
 - **After the talk:** Reach out to Mike directly via Slack or email (shared on the closing slide).
 
